@@ -14,6 +14,7 @@ A complete local-first context engine and AI assistant pipeline for intelligent 
 - **Git/GitHub Integration**: Comprehensive Git operations with AI-powered commit messages and GitHub API integration
 - **File/Media Attachments**: Upload and analyze files, images, PDFs, and documents in chat with AI-powered insights
 - **Microservices Architecture**: Docker Compose orchestration with health monitoring
+- **Remote Agent Support (Planned)**: Distributed agent architecture for scalable processing across multiple machines
 - **Comprehensive Testing**: Unit tests, integration tests, and CI/CD pipeline
 
 ## 📋 Prerequisites
@@ -644,6 +645,25 @@ Configure auto-terminal execution in VS Code settings:
 - Commands not in the whitelist will be blocked
 - All executions are logged and displayed in the webview
 - Use timeouts to prevent long-running commands
+
+## 📚 Documentation
+
+### Core Documentation
+
+- **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and component overview
+- **[API Reference](docs/API_REFERENCE.md)**: Complete API endpoint documentation
+- **[Remote Agent Architecture](docs/REMOTE_AGENT_ARCHITECTURE.md)**: Distributed agent system design (planned feature)
+
+### Remote Agent Support (Planned)
+
+ContextForge is designed to support distributed processing through a Remote Agent Architecture. This planned feature will enable:
+
+- **Horizontal Scaling**: Distribute workloads across multiple machines
+- **Load Balancing**: Intelligent task distribution across agents
+- **Fault Tolerance**: Automatic failover and recovery
+- **Specialization**: Deploy specialized agents for specific tasks
+
+For detailed information about the planned remote agent architecture, including system design, communication patterns, deployment strategies, and implementation roadmap, see [Remote Agent Architecture Documentation](docs/REMOTE_AGENT_ARCHITECTURE.md).
 
 ## 🤝 Support
 
