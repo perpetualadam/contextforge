@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  api_gateway:
+    build: ./services/api_gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - VECTOR_INDEX_URL=http://vector-index:8001
+      - PREPROCESSOR_URL=http://preprocessor:8003
+      - CONNECTOR_URL=http://connector:8002
+      - WEB_FETCHER_URL=http://web-fetcher:8004
+      - TERMINAL_EXECUTOR_URL=http://terminal-executor:8006
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:8085/generate}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+      - BING_SUBSCRIPTION_KEY=${BING_SUBSCRIPTION_KEY:-}
+      - GOOGLE_CSE_KEY=${GOOGLE_CSE_KEY:-}
+      - GOOGLE_CSE_ID=${GOOGLE_CSE_ID:-}
+      - LLM_PRIORITY=${LLM_PRIORITY:-ollama}
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-True}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - vector-index
+      - preprocessor
+      - connector
+      - web-fetcher
+      - terminal-executor
+    networks:
+      - contextforge
+
+  vector-index:
+    build: ./services/vector_index
+    ports:
+      - "8001:8001"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/vector_index:/app/data
+    networks:
+      - contextforge
+
+  preprocessor:
+    build: ./services/preprocessor
+    ports:
+      - "8003:8003"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - contextforge
+
+  connector:
+    build: ./services/connector
+    ports:
+      - "8002:8002"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/repos:/app/repos
+    networks:
+      - contextforge
+
+  web-fetcher:
+    build: ./services/web_fetcher
+    ports:
+      - "8004:8004"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/web_cache:/app/cache
+    networks:
+      - contextforge
+
+  terminal-executor:
+    build: ./services/terminal_executor
+    ports:
+      - "8006:8006"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/repos:/app/workspace
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker commands
+    networks:
+      - contextforge
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE  # For file operations
+
+volumes:
+  vector_data:
+  repo_data:
+  web_cache:
+
+networks:
+  contextforge:
+    driver: bridge

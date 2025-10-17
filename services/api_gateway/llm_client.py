@@ -1,0 +1,306 @@
+"""
+LLM Client with pluggable backends and fallback support.
+Supports local (Ollama, LM Studio) and remote (OpenAI, Anthropic, Mistral) LLMs.
+"""
+
+import os
+import time
+import json
+import logging
+from typing import Dict, List, Optional, Any
+from abc import ABC, abstractmethod
+
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+
+
+class LLMError(Exception):
+    """Base exception for LLM-related errors."""
+    pass
+
+
+class BaseAdapter(ABC):
+    """Base class for LLM adapters."""
+    
+    def __init__(self, name: str):
+        self.name = name
+        self.timeout = DEFAULT_TIMEOUT
+    
+    @abstractmethod
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        """Generate text from prompt. Returns dict with 'text' and 'meta' keys."""
+        pass
+    
+    def is_available(self) -> bool:
+        """Check if this adapter is available/configured."""
+        return True
+
+
+class OllamaAdapter(BaseAdapter):
+    """Ollama local LLM adapter."""
+    
+    def __init__(self, url: Optional[str] = None):
+        super().__init__("ollama")
+        self.url = url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        self.default_model = os.getenv("OLLAMA_MODEL", "mistral")
+    
+    def is_available(self) -> bool:
+        try:
+            response = requests.get(f"{self.url.replace('/api/generate', '')}/api/tags", 
+                                  timeout=5)
+            return response.status_code == 200
+        except Exception:
+            return False
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        start_time = time.time()
+        
+        payload = {
+            "model": model or self.default_model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": kwargs.get("temperature", 0.7)
+            }
+        }
+        
+        try:
+            response = requests.post(self.url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            
+            result = response.json()
+            return {
+                "text": result.get("response", ""),
+                "meta": {
+                    "backend": self.name,
+                    "model": payload["model"],
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "tokens": result.get("eval_count", 0)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Ollama generation failed: {e}")
+            raise LLMError(f"Ollama generation failed: {e}")
+
+
+class LMStudioAdapter(BaseAdapter):
+    """LM Studio local LLM adapter."""
+    
+    def __init__(self, url: Optional[str] = None):
+        super().__init__("lm_studio")
+        self.url = url or os.getenv("LM_STUDIO_URL", "http://localhost:8085/generate")
+    
+    def is_available(self) -> bool:
+        try:
+            response = requests.get(self.url.replace("/generate", "/health"), timeout=5)
+            return response.status_code == 200
+        except Exception:
+            return False
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        start_time = time.time()
+        
+        payload = {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": kwargs.get("temperature", 0.7),
+            "stop": kwargs.get("stop", [])
+        }
+        
+        try:
+            response = requests.post(self.url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            
+            result = response.json()
+            return {
+                "text": result.get("text", ""),
+                "meta": {
+                    "backend": self.name,
+                    "model": model or "lm-studio",
+                    "latency_ms": int((time.time() - start_time) * 1000)
+                }
+            }
+        except Exception as e:
+            logger.error(f"LM Studio generation failed: {e}")
+            raise LLMError(f"LM Studio generation failed: {e}")
+
+
+class OpenAIAdapter(BaseAdapter):
+    """OpenAI API adapter."""
+    
+    def __init__(self):
+        super().__init__("openai")
+        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.base_url = "https://api.openai.com/v1/chat/completions"
+        self.default_model = "gpt-3.5-turbo"
+    
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        if not self.api_key:
+            raise LLMError("OpenAI API key not configured")
+        
+        start_time = time.time()
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model or self.default_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": kwargs.get("temperature", 0.7)
+        }
+        
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers, 
+                                   timeout=self.timeout)
+            response.raise_for_status()
+            
+            result = response.json()
+            choice = result["choices"][0]
+            
+            return {
+                "text": choice["message"]["content"],
+                "meta": {
+                    "backend": self.name,
+                    "model": result["model"],
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "tokens": result["usage"]["total_tokens"]
+                }
+            }
+        except Exception as e:
+            logger.error(f"OpenAI generation failed: {e}")
+            raise LLMError(f"OpenAI generation failed: {e}")
+
+
+class AnthropicAdapter(BaseAdapter):
+    """Anthropic Claude API adapter."""
+    
+    def __init__(self):
+        super().__init__("anthropic")
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.base_url = "https://api.anthropic.com/v1/messages"
+        self.default_model = "claude-3-sonnet-20240229"
+    
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        if not self.api_key:
+            raise LLMError("Anthropic API key not configured")
+        
+        start_time = time.time()
+        
+        headers = {
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
+        }
+        
+        payload = {
+            "model": model or self.default_model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers, 
+                                   timeout=self.timeout)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            return {
+                "text": result["content"][0]["text"],
+                "meta": {
+                    "backend": self.name,
+                    "model": result["model"],
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "tokens": result["usage"]["output_tokens"]
+                }
+            }
+        except Exception as e:
+            logger.error(f"Anthropic generation failed: {e}")
+            raise LLMError(f"Anthropic generation failed: {e}")
+
+
+class LLMClient:
+    """Main LLM client with adapter priority and fallback support."""
+    
+    def __init__(self, priority_env: str = "LLM_PRIORITY"):
+        self.adapters = {}
+        self.priority = self._parse_priority(os.getenv(priority_env, "ollama"))
+        self._initialize_adapters()
+    
+    def _parse_priority(self, priority_str: str) -> List[str]:
+        """Parse comma-separated priority list."""
+        return [name.strip() for name in priority_str.split(",") if name.strip()]
+    
+    def _initialize_adapters(self):
+        """Initialize all available adapters."""
+        adapter_classes = {
+            "ollama": OllamaAdapter,
+            "lm_studio": LMStudioAdapter,
+            "openai": OpenAIAdapter,
+            "anthropic": AnthropicAdapter
+        }
+        
+        for name, adapter_class in adapter_classes.items():
+            try:
+                self.adapters[name] = adapter_class()
+                logger.info(f"Initialized {name} adapter")
+            except Exception as e:
+                logger.warning(f"Failed to initialize {name} adapter: {e}")
+    
+    def generate(self, prompt: str, model: Optional[str] = None, 
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        """Generate text using the first available adapter in priority order."""
+        last_error = None
+        
+        for adapter_name in self.priority:
+            if adapter_name not in self.adapters:
+                logger.warning(f"Adapter {adapter_name} not available")
+                continue
+            
+            adapter = self.adapters[adapter_name]
+            
+            if not adapter.is_available():
+                logger.info(f"Adapter {adapter_name} not available, trying next")
+                continue
+            
+            try:
+                logger.info(f"Attempting generation with {adapter_name}")
+                result = adapter.generate(prompt, model, max_tokens, **kwargs)
+                logger.info(f"Successfully generated with {adapter_name}")
+                return result
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Adapter {adapter_name} failed: {e}")
+                continue
+        
+        # If all adapters failed, raise the last error
+        raise LLMError(f"All LLM adapters failed. Last error: {last_error}")
+    
+    def list_available_adapters(self) -> List[str]:
+        """List currently available adapters."""
+        return [name for name, adapter in self.adapters.items() 
+                if adapter.is_available()]

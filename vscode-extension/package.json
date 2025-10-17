@@ -1,0 +1,425 @@
+{
+  "name": "contextforge",
+  "displayName": "ContextForge",
+  "description": "Local-first context engine and AI assistant for your codebase",
+  "version": "1.0.0",
+  "publisher": "contextforge",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Snippets"
+  ],
+  "keywords": [
+    "ai",
+    "assistant",
+    "context",
+    "search",
+    "code-analysis"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "contextforge.ask",
+        "title": "Ask ContextForge",
+        "category": "ContextForge",
+        "icon": "$(search)"
+      },
+      {
+        "command": "contextforge.ingestWorkspace",
+        "title": "Ingest Workspace",
+        "category": "ContextForge",
+        "icon": "$(database)"
+      },
+      {
+        "command": "contextforge.openIndexPanel",
+        "title": "Open Index Panel",
+        "category": "ContextForge",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "contextforge.clearIndex",
+        "title": "Clear Index",
+        "category": "ContextForge",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "contextforge.showSettings",
+        "title": "Settings",
+        "category": "ContextForge",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "contextforge.executeTerminal",
+        "title": "Execute Terminal Command",
+        "category": "ContextForge",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "contextforge.suggestTerminal",
+        "title": "Suggest Terminal Command",
+        "category": "ContextForge",
+        "icon": "$(light-bulb)"
+      },
+      {
+        "command": "contextforge.showTerminalProcesses",
+        "title": "Show Terminal Processes",
+        "category": "ContextForge",
+        "icon": "$(process)"
+      },
+      {
+        "command": "contextforge.toggleAutoTerminal",
+        "title": "Toggle Auto Terminal Mode",
+        "category": "ContextForge",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "contextforge.openChat",
+        "title": "Open Chat",
+        "category": "ContextForge",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "contextforge.clearChatHistory",
+        "title": "Clear Chat History",
+        "category": "ContextForge",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "contextforge.gitStatus",
+        "title": "Git Status",
+        "category": "ContextForge Git",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "contextforge.gitCommit",
+        "title": "Git Commit with AI Message",
+        "category": "ContextForge Git",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "contextforge.gitPush",
+        "title": "Git Push",
+        "category": "ContextForge Git",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "contextforge.gitPull",
+        "title": "Git Pull",
+        "category": "ContextForge Git",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "contextforge.gitBranch",
+        "title": "Git Branch Management",
+        "category": "ContextForge Git",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "contextforge.githubPR",
+        "title": "Create GitHub PR",
+        "category": "ContextForge GitHub",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "contextforge.githubIssues",
+        "title": "View GitHub Issues",
+        "category": "ContextForge GitHub",
+        "icon": "$(issues)"
+      },
+      {
+        "command": "contextforge.openPromptGenerator",
+        "title": "Open Prompt Generator",
+        "category": "ContextForge",
+        "icon": "$(sparkle)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "contextforge.indexView",
+          "name": "ContextForge Index",
+          "when": "contextforge.enabled"
+        },
+        {
+          "id": "contextforge.chatView",
+          "name": "ContextForge Chat",
+          "when": "contextforge.enabled"
+        },
+        {
+          "id": "contextforge.promptView",
+          "name": "ContextForge Prompt Generator",
+          "when": "contextforge.enabled"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "contextforge",
+          "title": "ContextForge",
+          "icon": "$(search-view-icon)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ContextForge",
+      "properties": {
+        "contextforge.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "ContextForge API Gateway URL"
+        },
+        "contextforge.autoIngest": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically ingest workspace on startup"
+        },
+        "contextforge.maxResults": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum number of search results to display"
+        },
+        "contextforge.enableWebSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable web search for additional context"
+        },
+        "contextforge.showLineNumbers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show line numbers in code snippets"
+        },
+        "contextforge.autoTerminalMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable automatic execution of terminal commands suggested by AI (SECURITY WARNING: Only enable if you trust the AI responses)"
+        },
+        "contextforge.autoTerminalTimeout": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 300,
+          "description": "Timeout in seconds for auto-executed terminal commands"
+        },
+        "contextforge.autoTerminalWhitelist": {
+          "type": "array",
+          "default": [
+            "git status",
+            "git log --oneline -10",
+            "npm test",
+            "npm run test",
+            "python -m pytest",
+            "pytest",
+            "ls",
+            "ls -la",
+            "pwd",
+            "whoami",
+            "node --version",
+            "python --version",
+            "npm --version"
+          ],
+          "description": "List of terminal commands that are allowed for auto-execution",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contextforge.chatHistoryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable chat history persistence across VS Code sessions"
+        },
+        "contextforge.chatMaxHistory": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum number of chat sessions to keep in history"
+        },
+        "contextforge.fileAttachmentsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable file attachment support in chat"
+        },
+        "contextforge.maxFileSize": {
+          "type": "number",
+          "default": 10485760,
+          "minimum": 1048576,
+          "maximum": 104857600,
+          "description": "Maximum file size for attachments in bytes (default: 10MB)"
+        },
+        "contextforge.allowedFileTypes": {
+          "type": "array",
+          "default": ["image/*", "application/pdf", "text/*", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+          "description": "Allowed MIME types for file attachments"
+        },
+        "contextforge.gitEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Git integration features"
+        },
+        "contextforge.githubToken": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub personal access token for API operations"
+        },
+        "contextforge.autoCommitMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-generated commit messages"
+        },
+        "contextforge.defaultBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Default branch name for new repositories"
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "contextforge.ask",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.ingestWorkspace",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.openIndexPanel",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.clearIndex",
+          "when": "contextforge.enabled"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "contextforge.ask",
+          "when": "contextforge.enabled",
+          "group": "contextforge"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "contextforge.ingestWorkspace",
+          "when": "view == contextforge.indexView",
+          "group": "navigation"
+        },
+        {
+          "command": "contextforge.clearIndex",
+          "when": "view == contextforge.indexView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "contextforge.ask",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.ingestWorkspace",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.executeTerminal",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.suggestTerminal",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.toggleAutoTerminal",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.openChat",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.gitStatus",
+        "key": "ctrl+shift+g s",
+        "mac": "cmd+shift+g s",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.gitCommit",
+        "key": "ctrl+shift+g c",
+        "mac": "cmd+shift+g c",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.gitPush",
+        "key": "ctrl+shift+g p",
+        "mac": "cmd+shift+g p",
+        "when": "contextforge.enabled"
+      },
+      {
+        "command": "contextforge.githubPR",
+        "key": "ctrl+shift+g r",
+        "mac": "cmd+shift+g r",
+        "when": "contextforge.enabled"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^5.45.0",
+    "@typescript-eslint/parser": "^5.45.0",
+    "@vscode/test-electron": "^2.2.0",
+    "eslint": "^8.28.0",
+    "typescript": "^4.9.4",
+    "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.0",
+    "@types/multer": "^2.0.0",
+    "axios": "^1.6.0",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "pdf-parse": "^2.4.3",
+    "sharp": "^0.34.4",
+    "simple-git": "^3.28.0",
+    "tesseract.js": "^6.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/contextforge/contextforge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/contextforge/contextforge/issues"
+  },
+  "homepage": "https://github.com/contextforge/contextforge#readme",
+  "license": "MIT"
+}

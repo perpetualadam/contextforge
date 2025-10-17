@@ -1,0 +1,250 @@
+{
+  "application": {
+    "name": "ContextForge Example Application",
+    "version": "1.0.0",
+    "description": "Example application demonstrating ContextForge capabilities",
+    "environment": "development"
+  },
+  "database": {
+    "type": "sqlite",
+    "path": "app.db",
+    "pool_size": 10,
+    "timeout": 30,
+    "enable_foreign_keys": true,
+    "backup": {
+      "enabled": true,
+      "interval_hours": 24,
+      "retention_days": 7,
+      "path": "backups/"
+    }
+  },
+  "authentication": {
+    "jwt": {
+      "algorithm": "HS256",
+      "expiry_hours": 24,
+      "refresh_enabled": false
+    },
+    "password": {
+      "min_length": 8,
+      "require_uppercase": true,
+      "require_lowercase": true,
+      "require_numbers": true,
+      "require_special_chars": false,
+      "hash_algorithm": "sha256"
+    },
+    "session": {
+      "timeout_minutes": 30,
+      "max_concurrent_sessions": 5
+    }
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "debug": true,
+    "cors": {
+      "enabled": true,
+      "origins": ["*"],
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      "headers": ["*"],
+      "credentials": true
+    },
+    "rate_limiting": {
+      "enabled": false,
+      "requests_per_minute": 100,
+      "burst_size": 20
+    },
+    "pagination": {
+      "default_page_size": 20,
+      "max_page_size": 100
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "file": {
+      "enabled": true,
+      "path": "logs/app.log",
+      "max_size_mb": 100,
+      "backup_count": 5,
+      "rotation": "daily"
+    },
+    "console": {
+      "enabled": true,
+      "colored": true
+    },
+    "audit": {
+      "enabled": true,
+      "log_requests": true,
+      "log_responses": false,
+      "sensitive_fields": ["password", "token", "secret"]
+    }
+  },
+  "security": {
+    "encryption": {
+      "algorithm": "AES-256-GCM",
+      "key_rotation_days": 90
+    },
+    "headers": {
+      "x_frame_options": "DENY",
+      "x_content_type_options": "nosniff",
+      "x_xss_protection": "1; mode=block",
+      "strict_transport_security": "max-age=31536000; includeSubDomains"
+    },
+    "content_security_policy": {
+      "enabled": false,
+      "policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "features": {
+    "user_registration": {
+      "enabled": false,
+      "require_email_verification": true,
+      "default_role": "user"
+    },
+    "password_reset": {
+      "enabled": false,
+      "token_expiry_hours": 1,
+      "max_attempts_per_day": 3
+    },
+    "audit_logging": {
+      "enabled": true,
+      "log_user_actions": true,
+      "log_admin_actions": true,
+      "retention_days": 90
+    },
+    "file_upload": {
+      "enabled": false,
+      "max_file_size_mb": 10,
+      "allowed_extensions": [".jpg", ".jpeg", ".png", ".pdf", ".txt"],
+      "storage_path": "uploads/"
+    }
+  },
+  "integrations": {
+    "email": {
+      "enabled": false,
+      "provider": "smtp",
+      "smtp": {
+        "host": "localhost",
+        "port": 587,
+        "use_tls": true,
+        "username": "",
+        "from_address": "noreply@example.com"
+      }
+    },
+    "external_apis": {
+      "enabled": false,
+      "timeout_seconds": 30,
+      "retry_attempts": 3,
+      "retry_delay_seconds": 1
+    },
+    "monitoring": {
+      "enabled": false,
+      "metrics_endpoint": "/metrics",
+      "health_check_interval_seconds": 30
+    }
+  },
+  "development": {
+    "auto_reload": true,
+    "debug_toolbar": true,
+    "mock_external_services": true,
+    "seed_data": {
+      "enabled": true,
+      "create_admin_user": true,
+      "create_test_users": 5
+    },
+    "testing": {
+      "database_path": "test.db",
+      "reset_database": true,
+      "mock_authentication": false
+    }
+  },
+  "production": {
+    "auto_reload": false,
+    "debug_toolbar": false,
+    "mock_external_services": false,
+    "ssl": {
+      "enabled": false,
+      "cert_file": "ssl/cert.pem",
+      "key_file": "ssl/key.pem"
+    },
+    "monitoring": {
+      "health_checks": true,
+      "performance_metrics": true,
+      "error_tracking": true
+    }
+  },
+  "cache": {
+    "enabled": false,
+    "type": "memory",
+    "redis": {
+      "host": "localhost",
+      "port": 6379,
+      "database": 0,
+      "password": null,
+      "ssl": false
+    },
+    "ttl_seconds": 3600,
+    "max_entries": 1000
+  },
+  "backup": {
+    "enabled": true,
+    "schedule": "0 2 * * *",
+    "retention_days": 30,
+    "compression": true,
+    "encryption": false,
+    "storage": {
+      "type": "local",
+      "path": "backups/",
+      "s3": {
+        "bucket": "",
+        "region": "us-east-1",
+        "access_key": "",
+        "secret_key": ""
+      }
+    }
+  },
+  "notifications": {
+    "enabled": false,
+    "channels": {
+      "email": {
+        "enabled": false,
+        "templates_path": "templates/email/"
+      },
+      "webhook": {
+        "enabled": false,
+        "endpoints": []
+      }
+    },
+    "events": {
+      "user_created": true,
+      "user_deleted": true,
+      "login_failed": true,
+      "system_error": true
+    }
+  },
+  "localization": {
+    "enabled": false,
+    "default_language": "en",
+    "supported_languages": ["en", "es", "fr", "de"],
+    "translations_path": "translations/"
+  },
+  "performance": {
+    "database": {
+      "connection_pool_size": 10,
+      "query_timeout_seconds": 30,
+      "slow_query_threshold_ms": 1000
+    },
+    "api": {
+      "request_timeout_seconds": 30,
+      "max_request_size_mb": 10,
+      "compression": {
+        "enabled": true,
+        "min_size_bytes": 1024
+      }
+    },
+    "caching": {
+      "static_files_cache_seconds": 86400,
+      "api_response_cache_seconds": 300
+    }
+  }
+}
