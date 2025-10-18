@@ -551,10 +551,18 @@ code --install-extension contextforge-1.0.0.vsix
 
 ## 📚 Documentation
 
+### Core Documentation
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and components
 - **[API Reference](docs/API_REFERENCE.md)**: Complete API documentation
 - **[VS Code Extension](vscode-extension/README.md)**: Extension usage guide
 - **[Data Privacy](DATA_PRIVACY.md)**: Privacy and security details
+
+### Remote Agent Architecture (Planned Feature)
+- **[Architecture Overview](docs/REMOTE_AGENT_ARCHITECTURE.md)**: Distributed agent system design with diagrams and patterns
+- **[Implementation Guide](docs/REMOTE_AGENT_IMPLEMENTATION_GUIDE.md)**: Step-by-step implementation from Phase 1 to Phase 3
+- **[Usage Guide](docs/REMOTE_AGENT_USAGE_GUIDE.md)**: Practical examples and API usage patterns
+- **[Deployment Guide](docs/REMOTE_AGENT_DEPLOYMENT_GUIDE.md)**: Docker Compose, Kubernetes, and cloud deployment
+- **[Quick Reference](docs/REMOTE_AGENT_QUICK_REFERENCE.md)**: Quick commands and troubleshooting
 
 ## 🛠️ Development
 
