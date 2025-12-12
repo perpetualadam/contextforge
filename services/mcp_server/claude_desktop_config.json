@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "contextforge": {
+      "command": "python",
+      "args": ["-m", "services.mcp_server.app", "stdio"],
+      "cwd": "C:/path/to/ContextForge",
+      "env": {
+        "API_GATEWAY_URL": "http://localhost:8080",
+        "TERMINAL_EXECUTOR_URL": "http://localhost:8006",
+        "PYTHONPATH": "C:/path/to/ContextForge"
+      }
+    }
+  }
+}
+

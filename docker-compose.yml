@@ -94,6 +94,24 @@ services:
     cap_add:
       - DAC_OVERRIDE  # For file operations
 
+  mcp-server:
+    build:
+      context: .
+      dockerfile: ./services/mcp_server/Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      - API_GATEWAY_URL=http://api_gateway:8080
+      - TERMINAL_EXECUTOR_URL=http://terminal-executor:8006
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - api_gateway
+      - terminal-executor
+    networks:
+      - contextforge
+    # For HTTP transport, use: ["python", "-m", "services.mcp_server.app", "http", "--port", "8010"]
+    command: ["python", "-m", "services.mcp_server.app", "http", "--port", "8010"]
+
 volumes:
   vector_data:
   repo_data:
