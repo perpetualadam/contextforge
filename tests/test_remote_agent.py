@@ -421,6 +421,11 @@ class TestAgentWorker:
         assert "code_analysis" in self.worker._task_handlers
         assert "rag_query" in self.worker._task_handlers
         assert "web_search" in self.worker._task_handlers
+        assert "terminal_execution" in self.worker._task_handlers
+        assert "document_ingestion" in self.worker._task_handlers
+        assert "vector_search" in self.worker._task_handlers
+        assert "llm_generation" in self.worker._task_handlers
+        assert "batch_processing" in self.worker._task_handlers
 
     def test_register_custom_handler(self):
         """Test registering custom handler."""
@@ -465,6 +470,99 @@ class TestAgentWorker:
         assert info.name == "Test Worker"
         assert info.agent_id == self.worker.agent_id
         assert info.max_concurrent_tasks == 3
+
+    @pytest.mark.asyncio
+    async def test_handle_terminal_execution_echo(self):
+        """Test terminal execution handler with echo command."""
+        result = await self.worker._handle_terminal_execution({
+            "command": "echo hello world"
+        })
+        assert result["success"] is True
+        assert result["exit_code"] == 0
+        assert "hello" in result["stdout"]
+
+    @pytest.mark.asyncio
+    async def test_handle_terminal_execution_disallowed(self):
+        """Test terminal execution rejects disallowed commands."""
+        result = await self.worker._handle_terminal_execution({
+            "command": "rm -rf /"
+        })
+        assert "error" in result
+        assert "not allowed" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_handle_terminal_execution_empty(self):
+        """Test terminal execution with empty command."""
+        result = await self.worker._handle_terminal_execution({})
+        assert "error" in result
+        assert "No command" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_handle_vector_search_no_query(self):
+        """Test vector search with no query."""
+        result = await self.worker._handle_vector_search({})
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_handle_llm_generation_no_prompt(self):
+        """Test LLM generation with no prompt."""
+        result = await self.worker._handle_llm_generation({})
+        assert "error" in result
+        # Either "No prompt" or import error is acceptable
+        assert "No prompt" in result["error"] or "module" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_handle_batch_processing_empty(self):
+        """Test batch processing with no tasks."""
+        result = await self.worker._handle_batch_processing({})
+        assert "error" in result
+        assert "No tasks" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_handle_batch_processing_parallel(self):
+        """Test batch processing with parallel execution."""
+        result = await self.worker._handle_batch_processing({
+            "tasks": [
+                {"task_type": "echo", "payload": {"msg": "1"}},
+                {"task_type": "echo", "payload": {"msg": "2"}},
+            ],
+            "parallel": True,
+        })
+        assert result["total_tasks"] == 2
+        assert result["successful"] == 2
+        assert result["failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_handle_batch_processing_sequential(self):
+        """Test batch processing with sequential execution."""
+        result = await self.worker._handle_batch_processing({
+            "tasks": [
+                {"task_type": "echo", "payload": {"msg": "1"}},
+                {"task_type": "echo", "payload": {"msg": "2"}},
+            ],
+            "parallel": False,
+        })
+        assert result["total_tasks"] == 2
+        assert result["successful"] == 2
+
+    @pytest.mark.asyncio
+    async def test_handle_batch_processing_unknown_type(self):
+        """Test batch processing with unknown task type."""
+        result = await self.worker._handle_batch_processing({
+            "tasks": [
+                {"task_type": "unknown_type", "payload": {}},
+            ],
+        })
+        assert result["failed"] == 1
+        assert "Unknown task type" in result["errors"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_handle_document_ingestion_no_path(self):
+        """Test document ingestion with no path."""
+        result = await self.worker._handle_document_ingestion({})
+        assert "error" in result
+        # Either "No path" or import error is acceptable
+        assert "No path" in result["error"] or "module" in result["error"]
 
 
 class TestCoordinator:

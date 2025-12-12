@@ -44,7 +44,10 @@ class AgentCapability(str, Enum):
     RAG_QUERY = "rag_query"
     FILE_PROCESSING = "file_processing"
     TERMINAL_EXECUTION = "terminal_execution"
+    DOCUMENT_INGESTION = "document_ingestion"
+    VECTOR_SEARCH = "vector_search"
     LLM_GENERATION = "llm_generation"
+    BATCH_PROCESSING = "batch_processing"
 
 
 class AgentInfo(BaseModel):
