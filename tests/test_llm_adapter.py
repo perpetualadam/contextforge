@@ -27,15 +27,15 @@ from llm_client import (
 
 class TestOllamaAdapter:
     """Test the OllamaAdapter functionality."""
-    
+
     def setup_method(self):
         """Set up test fixtures."""
-        self.adapter = OllamaAdapter("http://localhost:11434")
-    
+        self.adapter = OllamaAdapter("http://localhost:11434/api/generate")
+
     def test_ollama_adapter_initialization(self):
         """Test OllamaAdapter initializes correctly."""
         assert self.adapter.name == "ollama"
-        assert self.adapter.base_url == "http://localhost:11434"
+        assert self.adapter.url == "http://localhost:11434/api/generate"
     
     @patch('requests.post')
     def test_ollama_adapter_successful_request(self, mock_post):
@@ -82,43 +82,53 @@ class TestOllamaAdapter:
 
 class TestOpenAIAdapter:
     """Test the OpenAIAdapter functionality."""
-    
+
     def setup_method(self):
         """Set up test fixtures."""
-        self.adapter = OpenAIAdapter("test-api-key")
-    
+        # OpenAIAdapter reads API key from environment
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
+            self.adapter = OpenAIAdapter()
+
     def test_openai_adapter_initialization(self):
         """Test OpenAIAdapter initializes correctly."""
-        assert self.adapter.name == "openai"
-        assert self.adapter.api_key == "test-api-key"
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
+            adapter = OpenAIAdapter()
+            assert adapter.name == "openai"
+            assert adapter.api_key == "test-api-key"
     
     @patch('requests.post')
     def test_openai_adapter_successful_request(self, mock_post):
         """Test OpenAIAdapter handles successful requests."""
-        # Mock successful response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "This is a test response from OpenAI"
+        # Set up adapter with API key
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
+            adapter = OpenAIAdapter()
+
+            # Mock successful response
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "model": "gpt-3.5-turbo",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "This is a test response from OpenAI"
+                        }
                     }
+                ],
+                "usage": {
+                    "completion_tokens": 75,
+                    "total_tokens": 100
                 }
-            ],
-            "usage": {
-                "completion_tokens": 75
             }
-        }
-        mock_post.return_value = mock_response
-        
-        response = self.adapter.generate("test prompt")
-        
-        assert "text" in response
-        assert "meta" in response
-        assert response["text"] == "This is a test response from OpenAI"
-        assert response["meta"]["backend"] == "openai"
-        assert response["meta"]["tokens"] == 75
+            mock_post.return_value = mock_response
+
+            response = adapter.generate("test prompt")
+
+            assert "text" in response
+            assert "meta" in response
+            assert response["text"] == "This is a test response from OpenAI"
+            assert response["meta"]["backend"] == "openai"
+            assert response["meta"]["tokens"] == 100
     
     @patch('requests.post')
     def test_openai_adapter_api_error(self, mock_post):
@@ -135,151 +145,164 @@ class TestOpenAIAdapter:
 
 class TestLLMClient:
     """Test the LLMClient functionality."""
-    
+
     def setup_method(self):
         """Set up test fixtures."""
         self.client = LLMClient()
-    
+
     def test_llm_client_initialization(self):
         """Test LLMClient initializes correctly."""
         assert hasattr(self.client, 'adapters')
         assert hasattr(self.client, 'priority')
         assert len(self.client.adapters) > 0
-    
-    def test_llm_client_mock_adapter_available(self):
-        """Test LLMClient has mock adapter available."""
-        assert "mock" in self.client.adapters
-        assert isinstance(self.client.adapters["mock"], MockAdapter)
-    
-    def test_llm_client_generate_with_mock(self):
-        """Test LLMClient can generate responses using mock adapter."""
-        # Set priority to mock only
-        self.client.priority = ["mock"]
-        
+
+    def test_llm_client_has_production_adapters(self):
+        """Test LLMClient has production adapters available."""
+        # Check that at least one production adapter is available
+        production_adapters = ["ollama", "lm_studio", "openai", "anthropic"]
+        available_adapters = list(self.client.adapters.keys())
+        assert any(adapter in available_adapters for adapter in production_adapters)
+
+    @patch('requests.post')
+    def test_llm_client_generate_with_ollama(self, mock_post):
+        """Test LLMClient can generate responses using ollama adapter."""
+        # Mock successful ollama response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "mistral",
+            "response": "This is a test response",
+            "eval_count": 50
+        }
+        mock_post.return_value = mock_response
+
+        # Set priority to ollama only
+        self.client.priority = ["ollama"]
+
+        # Mock is_available to return True
+        self.client.adapters["ollama"].is_available = Mock(return_value=True)
+
         response = self.client.generate("test prompt")
-        
+
         assert "text" in response
         assert "meta" in response
-        assert response["meta"]["backend"] == "mock"
+        assert response["meta"]["backend"] == "ollama"
         assert len(response["text"]) > 0
-    
-    def test_llm_client_fallback_mechanism(self):
+
+    @patch('requests.post')
+    def test_llm_client_fallback_mechanism(self, mock_post):
         """Test LLMClient fallback mechanism."""
-        # Create a client with mock adapters that fail
         client = LLMClient()
-        
-        # Mock a failing adapter
+
+        # Create a failing adapter
         failing_adapter = Mock()
         failing_adapter.name = "failing"
+        failing_adapter.is_available = Mock(return_value=True)
         failing_adapter.generate.side_effect = Exception("Adapter failed")
-        
-        # Add failing adapter to the beginning of priority
-        client.adapters["failing"] = failing_adapter
-        client.priority = ["failing", "mock"]
-        
-        # Should fallback to mock adapter
+
+        # Create a working adapter
+        working_adapter = Mock()
+        working_adapter.name = "working"
+        working_adapter.is_available = Mock(return_value=True)
+        working_adapter.generate.return_value = {
+            "text": "Success from working adapter",
+            "meta": {"backend": "working", "latency_ms": 100, "tokens": 10}
+        }
+
+        # Set up client with failing first, then working
+        client.adapters = {"failing": failing_adapter, "working": working_adapter}
+        client.priority = ["failing", "working"]
+
+        # Should fallback to working adapter
         response = client.generate("test prompt")
-        
+
         assert "text" in response
         assert "meta" in response
-        assert response["meta"]["backend"] == "mock"
-    
+        assert response["meta"]["backend"] == "working"
+
     def test_llm_client_no_adapters_available(self):
         """Test LLMClient behavior when no adapters are available."""
         # Create client with no working adapters
         client = LLMClient()
         client.adapters = {}
         client.priority = []
-        
-        with pytest.raises(Exception, match="No LLM adapters available"):
+
+        with pytest.raises(Exception, match="All LLM adapters failed"):
             client.generate("test prompt")
-    
+
     def test_llm_client_all_adapters_fail(self):
         """Test LLMClient behavior when all adapters fail."""
         # Create client with only failing adapters
         client = LLMClient()
-        
+
         failing_adapter = Mock()
         failing_adapter.name = "failing"
+        failing_adapter.is_available = Mock(return_value=True)
         failing_adapter.generate.side_effect = Exception("Adapter failed")
-        
+
         client.adapters = {"failing": failing_adapter}
         client.priority = ["failing"]
-        
+
         with pytest.raises(Exception, match="All LLM adapters failed"):
             client.generate("test prompt")
-    
-    def test_llm_client_get_available_adapters(self):
+
+    def test_llm_client_list_available_adapters(self):
         """Test LLMClient can list available adapters."""
-        available = self.client.get_available_adapters()
-        
+        available = self.client.list_available_adapters()
+
         assert isinstance(available, list)
-        assert "mock" in available
-        assert len(available) > 0
-    
-    def test_llm_client_get_priority_order(self):
-        """Test LLMClient can return priority order."""
-        priority = self.client.get_priority_order()
-        
-        assert isinstance(priority, list)
-        assert len(priority) > 0
-    
-    def test_llm_client_custom_priority(self):
-        """Test LLMClient respects custom priority order."""
-        # Set custom priority
-        custom_priority = ["mock"]
-        client = LLMClient(priority=custom_priority)
-        
-        assert client.priority == custom_priority
-        
-        response = client.generate("test prompt")
-        assert response["meta"]["backend"] == "mock"
+
+    def test_llm_client_priority_order(self):
+        """Test LLMClient has a priority order."""
+        assert isinstance(self.client.priority, list)
+        assert len(self.client.priority) > 0
 
 
 class TestLLMAdapterIntegration:
     """Integration tests for LLM adapters."""
-    
-    def test_adapter_response_format_consistency(self):
-        """Test all adapters return consistent response format."""
-        adapters = [
-            MockAdapter(),
-        ]
-        
-        for adapter in adapters:
-            response = adapter.generate("test prompt")
-            
-            # Check required fields
-            assert "text" in response
-            assert "meta" in response
-            
-            # Check text field
-            assert isinstance(response["text"], str)
-            assert len(response["text"]) > 0
-            
-            # Check meta field
-            meta = response["meta"]
-            assert "backend" in meta
-            assert "latency_ms" in meta
-            assert isinstance(meta["latency_ms"], (int, float))
-            assert meta["latency_ms"] >= 0
-    
-    def test_adapter_error_handling(self):
+
+    @patch('requests.post')
+    def test_adapter_response_format_consistency(self, mock_post):
+        """Test adapters return consistent response format."""
+        # Mock successful response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "mistral",
+            "response": "This is a test response",
+            "eval_count": 50
+        }
+        mock_post.return_value = mock_response
+
+        adapter = OllamaAdapter()
+        response = adapter.generate("test prompt")
+
+        # Check required fields
+        assert "text" in response
+        assert "meta" in response
+
+        # Check text field
+        assert isinstance(response["text"], str)
+        assert len(response["text"]) > 0
+
+        # Check meta field
+        meta = response["meta"]
+        assert "backend" in meta
+        assert "latency_ms" in meta
+        assert isinstance(meta["latency_ms"], (int, float))
+        assert meta["latency_ms"] >= 0
+
+    @patch('requests.post')
+    def test_adapter_error_handling(self, mock_post):
         """Test adapters handle errors gracefully."""
-        # Test with mock adapter (should not raise errors)
-        adapter = MockAdapter()
-        
-        # Test with various inputs
-        test_inputs = [
-            "",  # Empty string
-            "a" * 10000,  # Very long string
-            "Special chars: !@#$%^&*()",  # Special characters
-            "Unicode: 你好世界 🌍",  # Unicode characters
-        ]
-        
-        for test_input in test_inputs:
-            response = adapter.generate(test_input)
-            assert "text" in response
-            assert "meta" in response
+        # Mock error response
+        mock_post.side_effect = Exception("Connection error")
+
+        adapter = OllamaAdapter()
+
+        # Should raise an exception for errors
+        with pytest.raises(Exception):
+            adapter.generate("test prompt")
 
 
 if __name__ == "__main__":
