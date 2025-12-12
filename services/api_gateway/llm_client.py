@@ -7,6 +7,7 @@ import os
 import time
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Any
 from abc import ABC, abstractmethod
 
@@ -17,6 +18,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+
+
+def mask_sensitive_data(text: str) -> str:
+    """Mask sensitive data like API keys in log messages."""
+    if not text:
+        return text
+    # Mask API keys (common patterns)
+    patterns = [
+        (r'(sk-[a-zA-Z0-9]{20,})', r'sk-***MASKED***'),  # OpenAI
+        (r'(sk-ant-[a-zA-Z0-9]{20,})', r'sk-ant-***MASKED***'),  # Anthropic
+        (r'(Bearer\s+)[a-zA-Z0-9\-_]+', r'\1***MASKED***'),  # Bearer tokens
+        (r'(x-api-key:\s*)[a-zA-Z0-9\-_]+', r'\1***MASKED***'),  # API keys in headers
+        (r'(api[_-]?key["\']?\s*[:=]\s*["\']?)[a-zA-Z0-9\-_]+', r'\1***MASKED***'),  # Generic API keys
+    ]
+    result = text
+    for pattern, replacement in patterns:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
+
+
+def safe_log_error(message: str, error: Exception) -> None:
+    """Log error with sensitive data masked."""
+    error_str = mask_sensitive_data(str(error))
+    logger.error(f"{message}: {error_str}")
 
 
 class LLMError(Exception):
@@ -88,8 +113,8 @@ class OllamaAdapter(BaseAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"Ollama generation failed: {e}")
-            raise LLMError(f"Ollama generation failed: {e}")
+            safe_log_error("Ollama generation failed", e)
+            raise LLMError(f"Ollama generation failed: {mask_sensitive_data(str(e))}")
 
 
 class LMStudioAdapter(BaseAdapter):
@@ -132,8 +157,8 @@ class LMStudioAdapter(BaseAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"LM Studio generation failed: {e}")
-            raise LLMError(f"LM Studio generation failed: {e}")
+            safe_log_error("LM Studio generation failed", e)
+            raise LLMError(f"LM Studio generation failed: {mask_sensitive_data(str(e))}")
 
 
 class OpenAIAdapter(BaseAdapter):
@@ -186,8 +211,8 @@ class OpenAIAdapter(BaseAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"OpenAI generation failed: {e}")
-            raise LLMError(f"OpenAI generation failed: {e}")
+            safe_log_error("OpenAI generation failed", e)
+            raise LLMError(f"OpenAI generation failed: {mask_sensitive_data(str(e))}")
 
 
 class AnthropicAdapter(BaseAdapter):
@@ -239,8 +264,8 @@ class AnthropicAdapter(BaseAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"Anthropic generation failed: {e}")
-            raise LLMError(f"Anthropic generation failed: {e}")
+            safe_log_error("Anthropic generation failed", e)
+            raise LLMError(f"Anthropic generation failed: {mask_sensitive_data(str(e))}")
 
 
 class LLMClient:
@@ -269,7 +294,8 @@ class LLMClient:
                 self.adapters[name] = adapter_class()
                 logger.info(f"Initialized {name} adapter")
             except Exception as e:
-                logger.warning(f"Failed to initialize {name} adapter: {e}")
+                # Use safe logging to prevent API key exposure
+                logger.warning(f"Failed to initialize {name} adapter: {mask_sensitive_data(str(e))}")
     
     def generate(self, prompt: str, model: Optional[str] = None, 
                 max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
@@ -294,11 +320,12 @@ class LLMClient:
                 return result
             except Exception as e:
                 last_error = e
-                logger.warning(f"Adapter {adapter_name} failed: {e}")
+                # Use safe logging to prevent API key exposure
+                logger.warning(f"Adapter {adapter_name} failed: {mask_sensitive_data(str(e))}")
                 continue
-        
-        # If all adapters failed, raise the last error
-        raise LLMError(f"All LLM adapters failed. Last error: {last_error}")
+
+        # If all adapters failed, raise the last error with masked sensitive data
+        raise LLMError(f"All LLM adapters failed. Last error: {mask_sensitive_data(str(last_error))}")
     
     def list_available_adapters(self) -> List[str]:
         """List currently available adapters."""

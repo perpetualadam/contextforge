@@ -5,12 +5,18 @@ Provides unified API for ingestion, querying, and management.
 
 import os
 import logging
+import hashlib
+import secrets
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from functools import wraps
+from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field, validator
 import requests
 import structlog
 import base64
@@ -53,6 +59,119 @@ CONNECTOR_URL = os.getenv("CONNECTOR_URL", "http://connector:8002")
 WEB_FETCHER_URL = os.getenv("WEB_FETCHER_URL", "http://web-fetcher:8004")
 TERMINAL_EXECUTOR_URL = os.getenv("TERMINAL_EXECUTOR_URL", "http://terminal-executor:8006")
 
+# CORS Configuration - Security hardened
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+ALLOWED_HEADERS = ["Content-Type", "Authorization"]
+
+# Security Configuration
+API_KEY_ENABLED = os.getenv("API_KEY_ENABLED", "false").lower() == "true"
+API_KEYS = set(os.getenv("API_KEYS", "").split(",")) if os.getenv("API_KEYS") else set()
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))  # requests per window
+RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # window in seconds
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))  # max file upload size
+
+# Security utilities
+security = HTTPBearer(auto_error=False)
+
+
+class RateLimiter:
+    """Simple in-memory rate limiter."""
+
+    def __init__(self, max_requests: int = RATE_LIMIT_REQUESTS, window_seconds: int = RATE_LIMIT_WINDOW):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: Dict[str, List[float]] = defaultdict(list)
+
+    def is_allowed(self, client_id: str) -> bool:
+        """Check if a request from client_id is allowed."""
+        now = time.time()
+        window_start = now - self.window_seconds
+
+        # Clean old requests
+        self.requests[client_id] = [
+            req_time for req_time in self.requests[client_id]
+            if req_time > window_start
+        ]
+
+        # Check if under limit
+        if len(self.requests[client_id]) >= self.max_requests:
+            return False
+
+        # Record this request
+        self.requests[client_id].append(now)
+        return True
+
+    def get_remaining(self, client_id: str) -> int:
+        """Get remaining requests for client."""
+        now = time.time()
+        window_start = now - self.window_seconds
+        current_requests = len([
+            req_time for req_time in self.requests[client_id]
+            if req_time > window_start
+        ])
+        return max(0, self.max_requests - current_requests)
+
+
+# Initialize rate limiter
+rate_limiter = RateLimiter()
+
+
+def get_client_id(request: Request) -> str:
+    """Get a unique client identifier from request."""
+    # Use X-Forwarded-For if behind proxy, otherwise use client host
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def verify_api_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[str]:
+    """Verify API key if authentication is enabled."""
+    if not API_KEY_ENABLED:
+        return None
+
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="API key required. Provide Authorization: Bearer <api_key>",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    # Hash the provided key for comparison (if keys are stored hashed)
+    provided_key = credentials.credentials
+
+    if provided_key not in API_KEYS:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    return provided_key
+
+
+async def check_rate_limit(request: Request) -> None:
+    """Check rate limit for the request."""
+    if not RATE_LIMIT_ENABLED:
+        return
+
+    client_id = get_client_id(request)
+
+    if not rate_limiter.is_allowed(client_id):
+        remaining = rate_limiter.get_remaining(client_id)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {RATE_LIMIT_WINDOW} seconds.",
+            headers={
+                "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(int(time.time()) + RATE_LIMIT_WINDOW)
+            }
+        )
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="ContextForge API Gateway",
@@ -60,63 +179,76 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware - Security hardened
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,  # Set to True only if needed for specific use cases
+    allow_methods=ALLOWED_METHODS,
+    allow_headers=ALLOWED_HEADERS,
 )
 
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
 
 
-# Pydantic models
+# Pydantic models with input validation
 class IngestRequest(BaseModel):
-    path: str
+    path: str = Field(..., max_length=1024)
     recursive: bool = True
-    file_patterns: Optional[List[str]] = None
-    exclude_patterns: Optional[List[str]] = None
+    file_patterns: Optional[List[str]] = Field(None, max_items=50)
+    exclude_patterns: Optional[List[str]] = Field(None, max_items=50)
+
+    @validator('path')
+    def validate_path(cls, v):
+        # Prevent path traversal
+        if '..' in v:
+            raise ValueError("Path traversal not allowed")
+        return v
 
 
 class QueryRequest(BaseModel):
-    query: str
-    max_tokens: int = 512
+    query: str = Field(..., min_length=1, max_length=10000)
+    max_tokens: int = Field(512, ge=1, le=4096)
     enable_web_search: Optional[bool] = None
-    top_k: int = 10
+    top_k: int = Field(10, ge=1, le=100)
     auto_terminal_mode: bool = False
-    auto_terminal_timeout: int = 30
-    auto_terminal_whitelist: Optional[List[str]] = None
+    auto_terminal_timeout: int = Field(30, ge=1, le=300)
+    auto_terminal_whitelist: Optional[List[str]] = Field(None, max_items=50)
 
 
 class SearchRequest(BaseModel):
-    query: str
-    provider: Optional[str] = None
-    num_results: int = 5
+    query: str = Field(..., min_length=1, max_length=1000)
+    provider: Optional[str] = Field(None, max_length=50)
+    num_results: int = Field(5, ge=1, le=50)
     fetch_content: bool = False
 
 
 class LLMRequest(BaseModel):
-    prompt: str
-    model: Optional[str] = None
-    max_tokens: int = 512
-    temperature: float = 0.7
+    prompt: str = Field(..., min_length=1, max_length=100000)
+    model: Optional[str] = Field(None, max_length=100)
+    max_tokens: int = Field(512, ge=1, le=4096)
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
 
 
 class TerminalRequest(BaseModel):
-    command: str
-    working_directory: Optional[str] = None
-    timeout: int = 30
+    command: str = Field(..., min_length=1, max_length=4096)
+    working_directory: Optional[str] = Field(None, max_length=1024)
+    timeout: int = Field(30, ge=1, le=300)
     environment: Optional[Dict[str, str]] = None
     stream: bool = False
 
+    @validator('working_directory')
+    def validate_working_directory(cls, v):
+        if v and '..' in v:
+            raise ValueError("Path traversal not allowed")
+        return v
+
 
 class CommandSuggestionRequest(BaseModel):
-    task_description: str
-    context: Optional[str] = None
-    working_directory: Optional[str] = None
+    task_description: str = Field(..., min_length=1, max_length=5000)
+    context: Optional[str] = Field(None, max_length=10000)
+    working_directory: Optional[str] = Field(None, max_length=1024)
 
 
 class ChatMessage(BaseModel):
@@ -170,7 +302,7 @@ class PromptEnhancementResponse(BaseModel):
     improvements: List[str]
 
 
-# Health check endpoint
+# Health check endpoint (no auth/rate limit for health checks)
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -179,8 +311,16 @@ async def health_check():
 
 # Ingestion endpoints
 @app.post("/ingest")
-async def ingest_repository(request: IngestRequest, background_tasks: BackgroundTasks):
+async def ingest_repository(
+    request: IngestRequest,
+    background_tasks: BackgroundTasks,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Ingest a repository or directory for indexing."""
+    # Check rate limit
+    await check_rate_limit(http_request)
+
     try:
         logger.info("Starting repository ingestion", path=request.path)
         
@@ -255,10 +395,17 @@ async def get_ingestion_status():
 
 # Query endpoints
 @app.post("/query")
-async def query_context(request: QueryRequest):
+async def query_context(
+    request: QueryRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Query the context engine for an answer."""
+    # Check rate limit
+    await check_rate_limit(http_request)
+
     try:
-        logger.info("Processing query", query=request.query, auto_terminal_mode=request.auto_terminal_mode)
+        logger.info("Processing query", query=request.query[:100], auto_terminal_mode=request.auto_terminal_mode)
 
         response = rag_pipeline.answer_question(
             question=request.query,
@@ -379,8 +526,15 @@ async def search_web(request: SearchRequest):
 
 # LLM endpoints
 @app.post("/llm/generate")
-async def generate_text(request: LLMRequest):
+async def generate_text(
+    request: LLMRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Generate text using the LLM client."""
+    # Check rate limit
+    await check_rate_limit(http_request)
+
     try:
         llm_client = LLMClient()
         response = llm_client.generate(
@@ -411,8 +565,15 @@ async def list_llm_adapters():
 
 # Chat endpoints
 @app.post("/chat")
-async def chat_conversation(request: ChatRequest):
+async def chat_conversation(
+    request: ChatRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Handle multi-turn chat conversation with context awareness."""
+    # Check rate limit
+    await check_rate_limit(http_request)
+
     try:
         logger.info("Processing chat request", messages_count=len(request.messages))
 
@@ -655,18 +816,26 @@ Format your response as JSON with keys: enhanced, suggestions, improvements"""
 
 
 @app.post("/files/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Upload and process a file for chat context."""
+    # Check rate limit
+    if http_request:
+        await check_rate_limit(http_request)
+
     try:
         logger.info("File upload started", filename=file.filename, content_type=file.content_type)
 
         # Read file content
         content = await file.read()
 
-        # Validate file size (10MB max)
-        max_size = 10 * 1024 * 1024
+        # Validate file size using configurable limit
+        max_size = MAX_FILE_SIZE_MB * 1024 * 1024
         if len(content) > max_size:
-            raise HTTPException(status_code=413, detail=f"File size exceeds {max_size / 1024 / 1024}MB limit")
+            raise HTTPException(status_code=413, detail=f"File size exceeds {MAX_FILE_SIZE_MB}MB limit")
 
         # Encode to base64
         file_data = base64.b64encode(content).decode('utf-8')
@@ -948,10 +1117,17 @@ async def get_configuration():
 
 # Terminal execution endpoints
 @app.post("/terminal/execute")
-async def execute_terminal_command(request: TerminalRequest):
+async def execute_terminal_command(
+    request: TerminalRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
     """Execute a terminal command safely."""
+    # Check rate limit
+    await check_rate_limit(http_request)
+
     try:
-        logger.info("Executing terminal command", command=request.command)
+        logger.info("Executing terminal command", command=request.command[:100])
 
         response = requests.post(
             f"{TERMINAL_EXECUTOR_URL}/execute",

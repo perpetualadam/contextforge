@@ -10,9 +10,11 @@ import signal
 import time
 import json
 import re
+import shlex
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from datetime import datetime, timedelta
 from pathlib import Path
+from collections import OrderedDict
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -94,11 +96,45 @@ DANGEROUS_PATTERNS = [
     r'\|\s*rm\b',   # piped rm commands
 ]
 
+# Security limits
+MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "10"))
+MAX_TIMEOUT_SECONDS = int(os.getenv("MAX_TIMEOUT_SECONDS", "300"))
+MIN_TIMEOUT_SECONDS = 1
+
+
+def parse_command_safely(command: str) -> List[str]:
+    """
+    Safely parse a command string into a list of arguments.
+    This prevents shell injection by avoiding shell interpretation.
+    """
+    try:
+        # Use shlex to properly parse the command
+        args = shlex.split(command)
+        if not args:
+            raise ValueError("Empty command")
+        return args
+    except ValueError as e:
+        raise ValueError(f"Invalid command syntax: {e}")
+
+
+def validate_command_args(args: List[str]) -> None:
+    """
+    Validate command arguments after parsing.
+    Checks for shell metacharacters that could indicate injection attempts.
+    """
+    shell_metacharacters = ['|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r']
+
+    for arg in args:
+        for char in shell_metacharacters:
+            if char in arg:
+                raise ValueError(f"Command contains disallowed shell metacharacter: {char}")
+
+
 # Request/Response models
 class CommandRequest(BaseModel):
-    command: str = Field(..., description="Command to execute")
-    working_directory: Optional[str] = Field(None, description="Working directory for command execution")
-    timeout: Optional[int] = Field(30, description="Timeout in seconds", ge=1, le=300)
+    command: str = Field(..., description="Command to execute", max_length=4096)
+    working_directory: Optional[str] = Field(None, description="Working directory for command execution", max_length=1024)
+    timeout: Optional[int] = Field(30, description="Timeout in seconds", ge=MIN_TIMEOUT_SECONDS, le=MAX_TIMEOUT_SECONDS)
     environment: Optional[Dict[str, str]] = Field(None, description="Environment variables")
     stream: bool = Field(False, description="Stream output in real-time")
 
@@ -106,25 +142,39 @@ class CommandRequest(BaseModel):
     def validate_command(cls, v):
         if not v or not v.strip():
             raise ValueError("Command cannot be empty")
-        
-        # Check for dangerous patterns
+
+        # Check for dangerous patterns BEFORE parsing
         for pattern in DANGEROUS_PATTERNS:
             if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError(f"Command contains dangerous pattern: {pattern}")
-        
+                raise ValueError(f"Command contains dangerous pattern")
+
+        # Safely parse the command to prevent shell injection
+        try:
+            args = parse_command_safely(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid command: {e}")
+
+        # Validate parsed arguments for shell metacharacters
+        validate_command_args(args)
+
         # Check if command starts with allowed command
-        command_parts = v.strip().split()
-        if command_parts:
-            base_command = command_parts[0].split('/')[-1]  # Handle paths
+        if args:
+            base_command = args[0].split('/')[-1].split('\\')[-1]  # Handle paths on both Unix and Windows
             if base_command not in ALLOWED_COMMANDS:
                 raise ValueError(f"Command '{base_command}' is not in the allowed list")
-        
+
         return v
 
     @validator('working_directory')
     def validate_working_directory(cls, v):
         if v:
-            path = Path(v)
+            # Prevent path traversal attacks
+            path = Path(v).resolve()
+
+            # Check for path traversal attempts
+            if '..' in v:
+                raise ValueError("Path traversal not allowed")
+
             if not path.exists():
                 raise ValueError(f"Working directory does not exist: {v}")
             if not path.is_dir():
@@ -153,6 +203,11 @@ class ExecutionStatus(BaseModel):
     start_time: datetime
     working_directory: str
 
+# CORS Configuration - Security hardened
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+ALLOWED_METHODS = ["GET", "POST", "OPTIONS"]
+ALLOWED_HEADERS = ["Content-Type", "Authorization"]
+
 # Initialize FastAPI app
 app = FastAPI(
     title="ContextForge Terminal Executor",
@@ -160,18 +215,32 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware - Security hardened
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,  # Set to True only if needed for specific use cases
+    allow_methods=ALLOWED_METHODS,
+    allow_headers=ALLOWED_HEADERS,
 )
 
-# Global process tracking
-active_processes: Dict[int, subprocess.Popen] = {}
-process_metadata: Dict[int, ExecutionStatus] = {}
+# Bounded process tracking to prevent resource exhaustion
+class BoundedProcessDict(OrderedDict):
+    """OrderedDict with a maximum size limit. Removes oldest entries when full."""
+    def __init__(self, max_size: int = MAX_CONCURRENT_PROCESSES, *args, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        if len(self) >= self.max_size and key not in self:
+            # Remove oldest entry
+            oldest_key = next(iter(self))
+            self.pop(oldest_key)
+        super().__setitem__(key, value)
+
+# Global process tracking with bounded size
+active_processes: BoundedProcessDict = BoundedProcessDict(MAX_CONCURRENT_PROCESSES)
+process_metadata: BoundedProcessDict = BoundedProcessDict(MAX_CONCURRENT_PROCESSES)
 
 @app.get("/health")
 async def health_check():
@@ -195,25 +264,35 @@ async def get_allowed_commands():
 async def execute_command(request: CommandRequest):
     """Execute a command and return the complete result."""
     logger.info("Executing command", command=request.command, working_dir=request.working_directory)
-    
+
+    # Check concurrent process limit
+    if len(active_processes) >= MAX_CONCURRENT_PROCESSES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent processes ({MAX_CONCURRENT_PROCESSES}) reached. Please wait for existing processes to complete."
+        )
+
     start_time = time.time()
     working_dir = request.working_directory or os.getcwd()
-    
+
     try:
         # Prepare environment
         env = os.environ.copy()
         if request.environment:
             env.update(request.environment)
-        
-        # Execute command
-        process = await asyncio.create_subprocess_shell(
-            request.command,
+
+        # Safely parse command to prevent shell injection
+        args = parse_command_safely(request.command)
+
+        # Execute command using create_subprocess_exec (NOT shell) to prevent injection
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
             env=env
         )
-        
+
         # Store process info
         active_processes[process.pid] = process
         process_metadata[process.pid] = ExecutionStatus(
@@ -261,19 +340,30 @@ async def execute_command(request: CommandRequest):
             try:
                 process.kill()
                 await process.wait()
-            except:
-                pass
-            
+            except ProcessLookupError:
+                # Process already terminated
+                logger.debug("Process already terminated during timeout cleanup", process_id=process.pid)
+            except OSError as e:
+                logger.warning("Error killing process during timeout", process_id=process.pid, error=str(e))
+
             # Clean up
             active_processes.pop(process.pid, None)
             if process.pid in process_metadata:
                 process_metadata[process.pid].status = "timeout"
-            
+
+            logger.warning("Command timed out", command=request.command, timeout=request.timeout)
             raise HTTPException(
                 status_code=408,
                 detail=f"Command timed out after {request.timeout} seconds"
             )
-            
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except ValueError as e:
+        # Validation errors
+        logger.warning("Command validation failed", command=request.command, error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Command execution failed", command=request.command, error=str(e))
         raise HTTPException(status_code=500, detail=f"Command execution failed: {str(e)}")
@@ -282,26 +372,36 @@ async def execute_command(request: CommandRequest):
 async def execute_command_stream(request: CommandRequest):
     """Execute a command and stream the output in real-time."""
     logger.info("Streaming command execution", command=request.command)
-    
+
+    # Check concurrent process limit
+    if len(active_processes) >= MAX_CONCURRENT_PROCESSES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent processes ({MAX_CONCURRENT_PROCESSES}) reached. Please wait for existing processes to complete."
+        )
+
     async def stream_output():
         working_dir = request.working_directory or os.getcwd()
         start_time = time.time()
-        
+
         try:
             # Prepare environment
             env = os.environ.copy()
             if request.environment:
                 env.update(request.environment)
-            
-            # Execute command
-            process = await asyncio.create_subprocess_shell(
-                request.command,
+
+            # Safely parse command to prevent shell injection
+            args = parse_command_safely(request.command)
+
+            # Execute command using create_subprocess_exec (NOT shell) to prevent injection
+            process = await asyncio.create_subprocess_exec(
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
                 env=env
             )
-            
+
             # Store process info
             active_processes[process.pid] = process
             process_metadata[process.pid] = ExecutionStatus(
@@ -355,9 +455,12 @@ async def execute_command_stream(request: CommandRequest):
                 try:
                     process.kill()
                     await process.wait()
-                except:
-                    pass
-                
+                except ProcessLookupError:
+                    # Process already terminated
+                    logger.debug("Process already terminated during timeout cleanup", process_id=process.pid)
+                except OSError as e:
+                    logger.warning("Error killing process during timeout", process_id=process.pid, error=str(e))
+
                 error_chunk = StreamChunk(
                     type='error',
                     data=f"Command timed out after {request.timeout} seconds",
