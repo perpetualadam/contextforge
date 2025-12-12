@@ -13,89 +13,16 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'services', 'api_gateway'))
 
 from llm_client import (
-    LLMClient, 
-    OllamaAdapter, 
-    LMStudioAdapter, 
-    OpenAIAdapter, 
-    AnthropicAdapter, 
-    MockAdapter
+    LLMClient,
+    OllamaAdapter,
+    LMStudioAdapter,
+    OpenAIAdapter,
+    AnthropicAdapter
 )
 
 
-class TestMockAdapter:
-    """Test the MockAdapter functionality."""
-    
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.adapter = MockAdapter()
-    
-    def test_mock_adapter_initialization(self):
-        """Test MockAdapter initializes correctly."""
-        assert self.adapter.name == "mock"
-        assert hasattr(self.adapter, 'generate')
-    
-    def test_mock_adapter_code_response(self):
-        """Test MockAdapter returns code-related responses for code prompts."""
-        code_prompts = [
-            "Write a Python function",
-            "Implement a class",
-            "Create a script",
-            "Show me some code"
-        ]
-        
-        for prompt in code_prompts:
-            response = self.adapter.generate(prompt)
-            assert "text" in response
-            assert "meta" in response
-            assert response["meta"]["backend"] == "mock"
-            assert len(response["text"]) > 0
-            # Code responses should contain code-related keywords
-            text_lower = response["text"].lower()
-            assert any(keyword in text_lower for keyword in ["function", "class", "def", "import", "return"])
-    
-    def test_mock_adapter_explanation_response(self):
-        """Test MockAdapter returns explanatory responses for explanation prompts."""
-        explanation_prompts = [
-            "Explain how this works",
-            "What is machine learning?",
-            "Describe the process",
-            "Tell me about authentication"
-        ]
-        
-        for prompt in explanation_prompts:
-            response = self.adapter.generate(prompt)
-            assert "text" in response
-            assert "meta" in response
-            assert response["meta"]["backend"] == "mock"
-            assert len(response["text"]) > 0
-    
-    def test_mock_adapter_general_response(self):
-        """Test MockAdapter returns general responses for other prompts."""
-        general_prompts = [
-            "Hello there",
-            "Random question",
-            "Something else entirely"
-        ]
-        
-        for prompt in general_prompts:
-            response = self.adapter.generate(prompt)
-            assert "text" in response
-            assert "meta" in response
-            assert response["meta"]["backend"] == "mock"
-            assert len(response["text"]) > 0
-    
-    def test_mock_adapter_metadata(self):
-        """Test MockAdapter returns proper metadata."""
-        response = self.adapter.generate("test prompt")
-        
-        meta = response["meta"]
-        assert meta["backend"] == "mock"
-        assert "latency_ms" in meta
-        assert isinstance(meta["latency_ms"], (int, float))
-        assert meta["latency_ms"] >= 0
-        assert "tokens" in meta
-        assert isinstance(meta["tokens"], int)
-        assert meta["tokens"] > 0
+# Note: MockAdapter was removed in the security update as it was only for testing
+# and replaced with production-ready LLM adapters
 
 
 class TestOllamaAdapter:
