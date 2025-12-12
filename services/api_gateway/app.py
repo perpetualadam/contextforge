@@ -31,6 +31,13 @@ from rag import RAGPipeline
 from llm_client import LLMClient
 from search_adapter import SearchAdapter
 
+# Import remote agent routes
+try:
+    from agent_routes import router as agent_router, task_router, ws_router
+    REMOTE_AGENTS_ENABLED = True
+except ImportError:
+    REMOTE_AGENTS_ENABLED = False
+
 # Configure structured logging
 structlog.configure(
     processors=[
@@ -190,6 +197,12 @@ app.add_middleware(
 
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
+
+# Register remote agent routes if available
+if REMOTE_AGENTS_ENABLED:
+    app.include_router(agent_router)
+    app.include_router(task_router)
+    app.include_router(ws_router)
 
 
 # Pydantic models with input validation

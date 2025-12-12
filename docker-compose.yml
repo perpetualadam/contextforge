@@ -112,6 +112,37 @@ services:
     # For HTTP transport, use: ["python", "-m", "services.mcp_server.app", "http", "--port", "8010"]
     command: ["python", "-m", "services.mcp_server.app", "http", "--port", "8010"]
 
+  remote-agent:
+    build:
+      context: .
+      dockerfile: ./services/remote_agent/Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      - COORDINATOR_MODE=true
+      - WORKER_MODE=false
+      - API_GATEWAY_URL=http://api_gateway:8080
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - api_gateway
+    networks:
+      - contextforge
+
+  # Additional worker agents can be added like this:
+  # remote-agent-worker-1:
+  #   build:
+  #     context: .
+  #     dockerfile: ./services/remote_agent/Dockerfile
+  #   environment:
+  #     - COORDINATOR_MODE=false
+  #     - WORKER_MODE=true
+  #     - COORDINATOR_URL=http://remote-agent:8011
+  #     - AGENT_NAME=Worker-1
+  #   depends_on:
+  #     - remote-agent
+  #   networks:
+  #     - contextforge
+
 volumes:
   vector_data:
   repo_data:
