@@ -40,3 +40,4 @@ pytest-mock>=3.10.0
 
 # Database and storage
 sqlite3-utils>=3.35.2
+redis>=5.0.0

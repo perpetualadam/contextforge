@@ -875,3 +875,281 @@ class TestRemoteAgentAPIIntegration:
         assert "agents" in data
         assert "tasks" in data
 
+
+class TestRedisBackend:
+    """Test Redis backend for registry and queue."""
+
+    def test_redis_registry_without_redis(self):
+        """Test RedisAgentRegistry falls back gracefully without Redis."""
+        from remote_agent.redis_backend import RedisAgentRegistry
+
+        # Mock redis to be unavailable
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=None):
+            registry = RedisAgentRegistry()
+            assert not registry.is_redis_available
+
+            # Operations should not fail
+            agents = registry.list_agents()
+            assert agents == []
+
+            stats = registry.get_stats()
+            assert stats["backend"] == "memory"
+            assert stats["total_agents"] == 0
+
+    def test_redis_queue_without_redis(self):
+        """Test RedisTaskQueue falls back gracefully without Redis."""
+        from remote_agent.redis_backend import RedisTaskQueue
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=None):
+            queue = RedisTaskQueue()
+            assert not queue.is_redis_available
+
+            # Operations should not fail
+            tasks = queue.list_tasks()
+            assert tasks == []
+
+            stats = queue.get_stats()
+            assert stats["backend"] == "memory"
+            assert stats["total_tasks"] == 0
+
+    def test_redis_registry_with_mock_redis(self):
+        """Test RedisAgentRegistry with mocked Redis."""
+        from remote_agent.redis_backend import RedisAgentRegistry, AGENTS_KEY
+
+        mock_redis = Mock()
+        mock_redis.hset = Mock()
+        mock_redis.hget = Mock(return_value=None)
+        mock_redis.hgetall = Mock(return_value={})
+        mock_redis.hdel = Mock(return_value=1)
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=mock_redis):
+            registry = RedisAgentRegistry()
+            assert registry.is_redis_available
+
+            # Test register
+            registration = AgentRegistration(
+                name="Test Agent",
+                capabilities=["code_analysis"]
+            )
+            agent = registry.register(registration)
+            assert agent.name == "Test Agent"
+            mock_redis.hset.assert_called()
+
+            # Test deregister
+            result = registry.deregister(agent.agent_id)
+            assert result is True
+            mock_redis.hdel.assert_called_with(AGENTS_KEY, agent.agent_id)
+
+    def test_redis_queue_with_mock_redis(self):
+        """Test RedisTaskQueue with mocked Redis."""
+        from remote_agent.redis_backend import RedisTaskQueue, TASKS_KEY, PENDING_QUEUE_KEY
+
+        mock_redis = Mock()
+        mock_redis.zcard = Mock(return_value=0)
+        mock_redis.hset = Mock()
+        mock_redis.zadd = Mock()
+        mock_redis.hget = Mock(return_value=None)
+        mock_redis.hgetall = Mock(return_value={})
+        mock_redis.zrange = Mock(return_value=[])
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=mock_redis):
+            queue = RedisTaskQueue()
+            assert queue.is_redis_available
+
+            # Test submit
+            request = TaskRequest(task_type="test", payload={"key": "value"})
+            task = queue.submit(request)
+            assert task.task_type == "test"
+            mock_redis.hset.assert_called()
+            mock_redis.zadd.assert_called()
+
+            # Test get_next_task with empty queue
+            next_task = queue.get_next_task()
+            assert next_task is None
+
+    def test_redis_registry_serialization(self):
+        """Test agent serialization/deserialization."""
+        from remote_agent.redis_backend import RedisAgentRegistry
+
+        registry = RedisAgentRegistry.__new__(RedisAgentRegistry)
+        registry._redis = None
+        registry._heartbeat_timeout = timedelta(seconds=30)
+        registry._lock = Mock()
+
+        agent = AgentInfo(
+            name="Test Agent",
+            capabilities=["code_analysis", "rag_query"],
+            max_concurrent_tasks=10
+        )
+
+        # Serialize
+        serialized = registry._serialize_agent(agent)
+        assert isinstance(serialized, str)
+
+        # Deserialize
+        deserialized = registry._deserialize_agent(serialized)
+        assert deserialized.name == agent.name
+        assert deserialized.capabilities == agent.capabilities
+        assert deserialized.max_concurrent_tasks == agent.max_concurrent_tasks
+
+    def test_redis_queue_serialization(self):
+        """Test task serialization/deserialization."""
+        from remote_agent.redis_backend import RedisTaskQueue
+
+        queue = RedisTaskQueue.__new__(RedisTaskQueue)
+        queue._redis = None
+        queue._max_queue_size = 10000
+        queue._lock = Mock()
+
+        task = TaskInfo(
+            task_type="test",
+            payload={"key": "value"},
+            priority=TaskPriority.HIGH,
+            status=TaskStatus.QUEUED
+        )
+
+        # Serialize
+        serialized = queue._serialize_task(task)
+        assert isinstance(serialized, str)
+
+        # Deserialize
+        deserialized = queue._deserialize_task(serialized)
+        assert deserialized.task_type == task.task_type
+        assert deserialized.payload == task.payload
+        assert deserialized.priority == task.priority
+        assert deserialized.status == task.status
+
+    def test_init_module_use_redis_flag(self):
+        """Test __init__ module respects USE_REDIS flag."""
+        import remote_agent
+
+        # Test with USE_REDIS=false (default)
+        with patch.dict(os.environ, {"USE_REDIS": "false"}):
+            # Force reimport to pick up env var
+            import importlib
+            importlib.reload(remote_agent)
+            assert remote_agent.USE_REDIS is False
+
+    def test_get_redis_client_import_error(self):
+        """Test get_redis_client handles import error."""
+        from remote_agent.redis_backend import get_redis_client
+
+        with patch.dict('sys.modules', {'redis': None}):
+            # This should return None gracefully
+            with patch('builtins.__import__', side_effect=ImportError("No module named 'redis'")):
+                result = get_redis_client()
+                # Result should be None or the actual client if redis is installed
+                # We just verify it doesn't raise an exception
+
+    def test_redis_registry_heartbeat(self):
+        """Test heartbeat updates agent in Redis."""
+        from remote_agent.redis_backend import RedisAgentRegistry, AGENTS_KEY
+        import json
+
+        mock_redis = Mock()
+
+        # Create a mock agent
+        agent = AgentInfo(name="Test", capabilities=["test"])
+        agent_data = {
+            "agent_id": agent.agent_id,
+            "name": agent.name,
+            "endpoint": agent.endpoint,
+            "capabilities": agent.capabilities,
+            "status": agent.status.value,
+            "current_tasks": agent.current_tasks,
+            "max_concurrent_tasks": agent.max_concurrent_tasks,
+            "last_heartbeat": agent.last_heartbeat.isoformat(),
+            "metadata": agent.metadata
+        }
+        mock_redis.hget = Mock(return_value=json.dumps(agent_data))
+        mock_redis.hset = Mock()
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=mock_redis):
+            registry = RedisAgentRegistry()
+
+            heartbeat = HeartbeatRequest(
+                agent_id=agent.agent_id,
+                status=AgentStatus.BUSY,
+                current_tasks=3
+            )
+            result = registry.heartbeat(heartbeat)
+            assert result is True
+            mock_redis.hset.assert_called()
+
+    def test_redis_queue_complete_task(self):
+        """Test completing a task updates Redis."""
+        from remote_agent.redis_backend import RedisTaskQueue, TASKS_KEY, RESULTS_KEY
+        import json
+
+        mock_redis = Mock()
+
+        # Create a mock task
+        task = TaskInfo(
+            task_type="test",
+            status=TaskStatus.RUNNING,
+            started_at=datetime.utcnow()
+        )
+        task_data = {
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "payload": task.payload,
+            "priority": task.priority.value,
+            "status": task.status.value,
+            "created_at": task.created_at.isoformat(),
+            "started_at": task.started_at.isoformat(),
+            "completed_at": None,
+            "timeout_seconds": task.timeout_seconds,
+            "required_capabilities": task.required_capabilities,
+            "assigned_agent": task.assigned_agent,
+            "result": task.result,
+            "error": task.error,
+            "metadata": task.metadata
+        }
+        mock_redis.hget = Mock(return_value=json.dumps(task_data))
+        mock_redis.hset = Mock()
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=mock_redis):
+            queue = RedisTaskQueue()
+
+            result = queue.complete_task(task.task_id, result={"success": True})
+            assert result is not None
+            assert result.status == TaskStatus.COMPLETED
+            # Should have called hset twice (once for task, once for result)
+            assert mock_redis.hset.call_count == 2
+
+    def test_redis_queue_cancel_task(self):
+        """Test cancelling a task updates Redis."""
+        from remote_agent.redis_backend import RedisTaskQueue
+        import json
+
+        mock_redis = Mock()
+
+        task = TaskInfo(task_type="test", status=TaskStatus.QUEUED)
+        task_data = {
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "payload": task.payload,
+            "priority": task.priority.value,
+            "status": task.status.value,
+            "created_at": task.created_at.isoformat(),
+            "started_at": None,
+            "completed_at": None,
+            "timeout_seconds": task.timeout_seconds,
+            "required_capabilities": task.required_capabilities,
+            "assigned_agent": task.assigned_agent,
+            "result": task.result,
+            "error": task.error,
+            "metadata": task.metadata
+        }
+        mock_redis.hget = Mock(return_value=json.dumps(task_data))
+        mock_redis.hset = Mock()
+        mock_redis.zrem = Mock()
+
+        with patch('remote_agent.redis_backend.get_redis_client', return_value=mock_redis):
+            queue = RedisTaskQueue()
+
+            result = queue.cancel_task(task.task_id)
+            assert result is True
+            mock_redis.hset.assert_called()
+            mock_redis.zrem.assert_called()
+
