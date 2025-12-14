@@ -3,6 +3,10 @@ ContextForge API Gateway - Main FastAPI application.
 Provides unified API for ingestion, querying, and management.
 """
 
+# Load environment variables from .env file first
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import logging
 import hashlib

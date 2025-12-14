@@ -122,11 +122,30 @@ services:
       - COORDINATOR_MODE=true
       - WORKER_MODE=false
       - API_GATEWAY_URL=http://api_gateway:8080
+      - USE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       - api_gateway
+      - redis
     networks:
       - contextforge
+
+  # Redis for persistent storage (optional but recommended)
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - contextforge
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Additional worker agents can be added like this:
   # remote-agent-worker-1:
@@ -147,6 +166,7 @@ volumes:
   vector_data:
   repo_data:
   web_cache:
+  redis_data:
 
 networks:
   contextforge:

@@ -79,12 +79,14 @@ make dev
 ```
 
 This starts all services:
-- API Gateway: http://localhost:8080
+- API Gateway: http://localhost:8080 (Docker) or http://localhost:8082 (local dev)
 - Vector Index: http://localhost:8001
 - Connector: http://localhost:8002
 - Preprocessor: http://localhost:8003
 - Web Fetcher: http://localhost:8004
 - Terminal Executor: http://localhost:8006
+
+> **Note**: Docker Compose uses port 8080 for the API Gateway. Local development uses port 8082 to avoid conflicts.
 
 ### 4. Ingest Example Repository
 
@@ -110,7 +112,86 @@ make dev
 docker-compose up --build
 ```
 
-### Option 2: Local Development
+### Option 2: Local Development (Windows)
+
+Run each service in a separate CMD window:
+
+**Step 1: Install Ollama and start it**
+```cmd
+# Download from https://ollama.ai
+ollama serve
+# (If you see "bind: Only one usage of each socket address..." it's already running - that's OK!)
+```
+
+**Step 2: Create virtual environment (one time setup)**
+```cmd
+cd C:\path\to\ContextForge
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Step 3: Start all services (each in separate CMD window)**
+
+**CMD Window 1 - Vector Index (port 8001)**
+```cmd
+cd /d C:\path\to\ContextForge
+.\venv\Scripts\activate
+set PYTHONPATH=services\vector_index;.
+python -m uvicorn services.vector_index.app:app --host 0.0.0.0 --port 8001
+```
+
+**CMD Window 2 - Connector (port 8002)**
+```cmd
+cd /d C:\path\to\ContextForge
+.\venv\Scripts\activate
+set PYTHONPATH=services\connector;.
+python -m uvicorn services.connector.app:app --host 0.0.0.0 --port 8002
+```
+
+**CMD Window 3 - Preprocessor (port 8003)**
+```cmd
+cd /d C:\path\to\ContextForge
+.\venv\Scripts\activate
+set PYTHONPATH=services\preprocessor;.
+python -m uvicorn services.preprocessor.app:app --host 0.0.0.0 --port 8003
+```
+
+**CMD Window 4 - API Gateway (port 8082)**
+```cmd
+cd /d C:\path\to\ContextForge
+.\venv\Scripts\activate
+set PYTHONPATH=services\api_gateway;.
+set VECTOR_INDEX_URL=http://localhost:8001
+set CONNECTOR_URL=http://localhost:8002
+set PREPROCESSOR_URL=http://localhost:8003
+python -m uvicorn services.api_gateway.app:app --host 0.0.0.0 --port 8082
+```
+
+**Step 4: Install VS Code Extension**
+```cmd
+cd vscode-extension
+npm install
+npm run compile
+npx vsce package
+code --install-extension contextforge-1.0.0.vsix
+```
+
+**Step 5: Configure Extension**
+- Open VS Code Settings (`Ctrl+,`)
+- Set `contextforge.apiUrl` to `http://localhost:8082`
+
+### Service Ports Summary
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Vector Index | 8001 | FAISS vector search and embeddings |
+| Connector | 8002 | File system reading |
+| Preprocessor | 8003 | Code chunking |
+| API Gateway | 8082 | Main API (orchestrates all services) |
+| Ollama | 11434 | LLM inference |
+
+### Option 3: Local Development (Linux/Mac)
 
 ```bash
 # Create virtual environment
@@ -120,10 +201,21 @@ make venv
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
-# Start individual services
-cd services/api_gateway && python app.py
-cd services/vector_index && python app.py
-# ... etc
+# Start individual services (each in separate terminal)
+export PYTHONPATH=services/vector_index:.
+uvicorn services.vector_index.app:app --host 0.0.0.0 --port 8001
+
+export PYTHONPATH=services/connector:.
+uvicorn services.connector.app:app --host 0.0.0.0 --port 8002
+
+export PYTHONPATH=services/preprocessor:.
+uvicorn services.preprocessor.app:app --host 0.0.0.0 --port 8003
+
+export PYTHONPATH=services/api_gateway:.
+export VECTOR_INDEX_URL=http://localhost:8001
+export CONNECTOR_URL=http://localhost:8002
+export PREPROCESSOR_URL=http://localhost:8003
+uvicorn services.api_gateway.app:app --host 0.0.0.0 --port 8082
 ```
 
 ## 🔧 Usage
@@ -405,7 +497,7 @@ curl -X POST "http://localhost:8080/terminal/execute-stream" \
                                  │
                     ┌─────────────▼─────────────┐
                     │      API Gateway          │
-                    │      (Port 8080)          │
+                    │  (Port 8080/8082)         │
                     └─────────────┬─────────────┘
                                   │
         ┌─────────────────────────┼─────────────────────────┐

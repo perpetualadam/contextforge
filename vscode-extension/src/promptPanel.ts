@@ -32,7 +32,7 @@ interface PromptEnhancementResponse {
 }
 
 export class ContextForgePromptProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'contextforge.promptPanel';
+    public static readonly viewType = 'contextforge.promptView';
     private _view?: vscode.WebviewView;
     private _config: any;
     private _promptHistory: SavedPrompt[] = [];

@@ -3,6 +3,13 @@ RAG (Retrieval-Augmented Generation) pipeline for ContextForge.
 Combines vector search, web search, and LLM generation.
 """
 
+# Load environment variables early
+import pathlib
+from dotenv import load_dotenv
+# Find .env file in project root (two levels up from this file)
+env_path = pathlib.Path(__file__).parent.parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 import os
 import logging
 from typing import Dict, List, Optional, Any

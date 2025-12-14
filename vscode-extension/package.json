@@ -145,16 +145,19 @@
         {
           "id": "contextforge.indexView",
           "name": "ContextForge Index",
+          "type": "webview",
           "when": "contextforge.enabled"
         },
         {
           "id": "contextforge.chatView",
           "name": "ContextForge Chat",
+          "type": "webview",
           "when": "contextforge.enabled"
         },
         {
           "id": "contextforge.promptView",
           "name": "ContextForge Prompt Generator",
+          "type": "webview",
           "when": "contextforge.enabled"
         }
       ]
@@ -173,8 +176,14 @@
       "properties": {
         "contextforge.apiUrl": {
           "type": "string",
-          "default": "http://localhost:8080",
+          "default": "http://localhost:8082",
           "description": "ContextForge API Gateway URL"
+        },
+        "contextforge.chatSessions": {
+          "type": "array",
+          "default": [],
+          "description": "Stored chat sessions (managed by extension)",
+          "scope": "application"
         },
         "contextforge.autoIngest": {
           "type": "boolean",

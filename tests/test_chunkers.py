@@ -16,6 +16,13 @@ from lang_chunkers import (
     PythonChunker,
     JavaScriptChunker,
     MarkdownChunker,
+    CSharpChunker,
+    RustChunker,
+    RChunker,
+    JavaChunker,
+    GoChunker,
+    SwiftChunker,
+    KotlinChunker,
     ChunkerFactory
 )
 
@@ -454,6 +461,582 @@ This section has content.
         assert len(content_chunks) > 0
 
 
+class TestCSharpChunker:
+    """Test the CSharpChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = CSharpChunker()
+
+    def test_csharp_chunker_initialization(self):
+        """Test CSharpChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "csharp"
+
+    def test_chunk_namespace_and_class(self):
+        """Test chunking C# namespace and class."""
+        code = '''
+using System;
+using System.Collections.Generic;
+
+namespace MyApp.Models
+{
+    /// <summary>
+    /// Represents a user in the system.
+    /// </summary>
+    public class User
+    {
+        public string Name { get; set; }
+        public int Age { get; set; }
+
+        public User(string name, int age)
+        {
+            Name = name;
+            Age = age;
+        }
+
+        public string GetGreeting()
+        {
+            return $"Hello, {Name}!";
+        }
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "User.cs")
+
+        assert len(chunks) > 0
+
+        # Should find using statements
+        using_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "using"]
+        assert len(using_chunks) >= 2
+
+        # Should find namespace
+        namespace_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "namespace"]
+        assert len(namespace_chunks) >= 1
+
+        # Should find class
+        class_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "class"]
+        assert len(class_chunks) >= 1
+
+        # Should find methods
+        method_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "method"]
+        assert len(method_chunks) >= 1
+
+    def test_chunk_interface(self):
+        """Test chunking C# interface."""
+        code = '''
+namespace MyApp.Interfaces
+{
+    public interface IRepository<T>
+    {
+        T GetById(int id);
+        void Save(T entity);
+        void Delete(int id);
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "IRepository.cs")
+
+        interface_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "interface"]
+        assert len(interface_chunks) >= 1
+
+
+class TestRustChunker:
+    """Test the RustChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = RustChunker()
+
+    def test_rust_chunker_initialization(self):
+        """Test RustChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "rust"
+
+    def test_chunk_struct_and_impl(self):
+        """Test chunking Rust struct and impl block."""
+        code = '''
+use std::fmt;
+
+/// A point in 2D space.
+#[derive(Debug, Clone)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    /// Creates a new point.
+    pub fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+
+    /// Calculates distance from origin.
+    pub fn distance_from_origin(&self) -> f64 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
+    }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "point.rs")
+
+        assert len(chunks) > 0
+
+        # Should find use statements
+        use_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "use"]
+        assert len(use_chunks) >= 1
+
+        # Should find struct
+        struct_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "struct"]
+        assert len(struct_chunks) >= 1
+
+        # Should find impl blocks
+        impl_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "impl"]
+        assert len(impl_chunks) >= 2
+
+    def test_chunk_enum_and_trait(self):
+        """Test chunking Rust enum and trait."""
+        code = '''
+pub enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+pub trait Drawable {
+    fn draw(&self);
+    fn bounds(&self) -> (f64, f64, f64, f64);
+}
+'''
+
+        chunks = self.chunker.chunk(code, "traits.rs")
+
+        enum_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "enum"]
+        assert len(enum_chunks) >= 1
+
+        trait_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "trait"]
+        assert len(trait_chunks) >= 1
+
+
+class TestRChunker:
+    """Test the RChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = RChunker()
+
+    def test_r_chunker_initialization(self):
+        """Test RChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "r"
+
+    def test_chunk_functions(self):
+        """Test chunking R functions."""
+        code = '''
+library(ggplot2)
+library(dplyr)
+
+#' Calculate the mean of a vector
+#' @param x A numeric vector
+#' @return The mean value
+calculate_mean <- function(x) {
+    sum(x) / length(x)
+}
+
+#' Filter data by threshold
+filter_data = function(data, threshold) {
+    data[data > threshold]
+}
+
+plot_histogram <- function(data, title = "Histogram") {
+    ggplot(data, aes(x = value)) +
+        geom_histogram() +
+        ggtitle(title)
+}
+'''
+
+        chunks = self.chunker.chunk(code, "analysis.R")
+
+        assert len(chunks) > 0
+
+        # Should find library statements
+        library_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "library"]
+        assert len(library_chunks) >= 2
+
+        # Should find functions
+        function_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "function"]
+        assert len(function_chunks) >= 3
+
+
+class TestJavaChunker:
+    """Test the JavaChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = JavaChunker()
+
+    def test_java_chunker_initialization(self):
+        """Test JavaChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "java"
+
+    def test_chunk_class_and_methods(self):
+        """Test chunking Java class and methods."""
+        code = '''
+package com.example.models;
+
+import java.util.List;
+import java.util.ArrayList;
+
+/**
+ * Represents a user in the system.
+ */
+public class User {
+    private String name;
+    private int age;
+
+    /**
+     * Creates a new user.
+     * @param name The user's name
+     * @param age The user's age
+     */
+    public User(String name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "User.java")
+
+        assert len(chunks) > 0
+
+        # Should find package
+        package_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "package"]
+        assert len(package_chunks) >= 1
+
+        # Should find imports
+        import_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "import"]
+        assert len(import_chunks) >= 2
+
+        # Should find class
+        class_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "class"]
+        assert len(class_chunks) >= 1
+
+        # Should find methods
+        method_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "method"]
+        assert len(method_chunks) >= 3
+
+    def test_chunk_interface_and_enum(self):
+        """Test chunking Java interface and enum."""
+        code = '''
+package com.example;
+
+public interface Repository<T> {
+    T findById(int id);
+    void save(T entity);
+}
+
+public enum Status {
+    ACTIVE,
+    INACTIVE,
+    PENDING
+}
+'''
+
+        chunks = self.chunker.chunk(code, "Types.java")
+
+        interface_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "interface"]
+        assert len(interface_chunks) >= 1
+
+        enum_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "enum"]
+        assert len(enum_chunks) >= 1
+
+
+class TestGoChunker:
+    """Test the GoChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = GoChunker()
+
+    def test_go_chunker_initialization(self):
+        """Test GoChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "go"
+
+    def test_chunk_package_and_functions(self):
+        """Test chunking Go package and functions."""
+        code = '''
+package main
+
+import (
+    "fmt"
+    "strings"
+)
+
+// User represents a user in the system.
+type User struct {
+    Name string
+    Age  int
+}
+
+// NewUser creates a new user.
+func NewUser(name string, age int) *User {
+    return &User{
+        Name: name,
+        Age:  age,
+    }
+}
+
+// Greet returns a greeting message.
+func (u *User) Greet() string {
+    return fmt.Sprintf("Hello, %s!", u.Name)
+}
+
+func main() {
+    user := NewUser("Alice", 30)
+    fmt.Println(user.Greet())
+}
+'''
+
+        chunks = self.chunker.chunk(code, "main.go")
+
+        assert len(chunks) > 0
+
+        # Should find package
+        package_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "package"]
+        assert len(package_chunks) >= 1
+
+        # Should find imports
+        import_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "import"]
+        assert len(import_chunks) >= 1
+
+        # Should find struct
+        struct_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "struct"]
+        assert len(struct_chunks) >= 1
+
+        # Should find functions
+        function_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "function"]
+        assert len(function_chunks) >= 3
+
+    def test_chunk_interface(self):
+        """Test chunking Go interface."""
+        code = '''
+package storage
+
+type Repository interface {
+    Get(id int) (interface{}, error)
+    Save(entity interface{}) error
+    Delete(id int) error
+}
+'''
+
+        chunks = self.chunker.chunk(code, "repository.go")
+
+        interface_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "interface"]
+        assert len(interface_chunks) >= 1
+
+
+class TestSwiftChunker:
+    """Test the SwiftChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = SwiftChunker()
+
+    def test_swift_chunker_initialization(self):
+        """Test SwiftChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "swift"
+
+    def test_chunk_class_and_struct(self):
+        """Test chunking Swift class and struct."""
+        code = '''
+import Foundation
+import UIKit
+
+/// Represents a user in the system.
+class User {
+    var name: String
+    var age: Int
+
+    init(name: String, age: Int) {
+        self.name = name
+        self.age = age
+    }
+
+    func greet() -> String {
+        return "Hello, \\(name)!"
+    }
+}
+
+struct Point {
+    var x: Double
+    var y: Double
+
+    func distance(to other: Point) -> Double {
+        let dx = x - other.x
+        let dy = y - other.y
+        return sqrt(dx * dx + dy * dy)
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "Models.swift")
+
+        assert len(chunks) > 0
+
+        # Should find imports
+        import_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "import"]
+        assert len(import_chunks) >= 2
+
+        # Should find class
+        class_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "class"]
+        assert len(class_chunks) >= 1
+
+        # Should find struct
+        struct_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "struct"]
+        assert len(struct_chunks) >= 1
+
+        # Should find functions
+        function_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "function"]
+        assert len(function_chunks) >= 2
+
+    def test_chunk_protocol_and_extension(self):
+        """Test chunking Swift protocol and extension."""
+        code = '''
+protocol Drawable {
+    func draw()
+    var bounds: CGRect { get }
+}
+
+extension User: Drawable {
+    func draw() {
+        print("Drawing user")
+    }
+
+    var bounds: CGRect {
+        return CGRect.zero
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "Protocols.swift")
+
+        protocol_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "protocol"]
+        assert len(protocol_chunks) >= 1
+
+        extension_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "extension"]
+        assert len(extension_chunks) >= 1
+
+
+class TestKotlinChunker:
+    """Test the KotlinChunker functionality."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.chunker = KotlinChunker()
+
+    def test_kotlin_chunker_initialization(self):
+        """Test KotlinChunker initializes correctly."""
+        assert isinstance(self.chunker, BaseChunker)
+        assert self.chunker.get_language() == "kotlin"
+
+    def test_chunk_class_and_functions(self):
+        """Test chunking Kotlin class and functions."""
+        code = '''
+package com.example.models
+
+import java.util.Date
+
+/**
+ * Represents a user in the system.
+ */
+data class User(
+    val name: String,
+    val age: Int
+) {
+    fun greet(): String {
+        return "Hello, $name!"
+    }
+
+    fun isAdult(): Boolean {
+        return age >= 18
+    }
+}
+
+fun createUser(name: String, age: Int): User {
+    return User(name, age)
+}
+'''
+
+        chunks = self.chunker.chunk(code, "User.kt")
+
+        assert len(chunks) > 0
+
+        # Should find package
+        package_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "package"]
+        assert len(package_chunks) >= 1
+
+        # Should find imports
+        import_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "import"]
+        assert len(import_chunks) >= 1
+
+        # Should find class
+        class_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "class"]
+        assert len(class_chunks) >= 1
+
+        # Should find functions
+        function_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "function"]
+        assert len(function_chunks) >= 3
+
+    def test_chunk_interface_and_object(self):
+        """Test chunking Kotlin interface and object."""
+        code = '''
+package com.example
+
+interface Repository<T> {
+    fun findById(id: Int): T?
+    fun save(entity: T)
+}
+
+object UserRepository : Repository<User> {
+    override fun findById(id: Int): User? {
+        return null
+    }
+
+    override fun save(entity: User) {
+        // Save implementation
+    }
+}
+'''
+
+        chunks = self.chunker.chunk(code, "Repository.kt")
+
+        interface_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "interface"]
+        assert len(interface_chunks) >= 1
+
+        object_chunks = [c for c in chunks if c["meta"]["chunk_type"] == "object"]
+        assert len(object_chunks) >= 1
+
+
 class TestChunkerFactory:
     """Test the ChunkerFactory functionality."""
 
@@ -480,6 +1063,47 @@ class TestChunkerFactory:
             chunker = ChunkerFactory.get_chunker(filename)
             assert isinstance(chunker, MarkdownChunker)
 
+    def test_get_chunker_csharp(self):
+        """Test getting C# chunker."""
+        chunker = ChunkerFactory.get_chunker("User.cs")
+        assert isinstance(chunker, CSharpChunker)
+
+    def test_get_chunker_rust(self):
+        """Test getting Rust chunker."""
+        chunker = ChunkerFactory.get_chunker("main.rs")
+        assert isinstance(chunker, RustChunker)
+
+    def test_get_chunker_r(self):
+        """Test getting R chunker."""
+        r_files = ["analysis.r", "script.R", "report.rmd", "notebook.Rmd"]
+
+        for filename in r_files:
+            chunker = ChunkerFactory.get_chunker(filename)
+            assert isinstance(chunker, RChunker)
+
+    def test_get_chunker_java(self):
+        """Test getting Java chunker."""
+        chunker = ChunkerFactory.get_chunker("User.java")
+        assert isinstance(chunker, JavaChunker)
+
+    def test_get_chunker_go(self):
+        """Test getting Go chunker."""
+        chunker = ChunkerFactory.get_chunker("main.go")
+        assert isinstance(chunker, GoChunker)
+
+    def test_get_chunker_swift(self):
+        """Test getting Swift chunker."""
+        chunker = ChunkerFactory.get_chunker("ViewController.swift")
+        assert isinstance(chunker, SwiftChunker)
+
+    def test_get_chunker_kotlin(self):
+        """Test getting Kotlin chunker."""
+        kt_files = ["User.kt", "build.gradle.kts"]
+
+        for filename in kt_files:
+            chunker = ChunkerFactory.get_chunker(filename)
+            assert isinstance(chunker, KotlinChunker)
+
     def test_get_chunker_unsupported(self):
         """Test getting chunker for unsupported file type."""
         # ChunkerFactory returns JavaScriptChunker as default for unsupported types
@@ -498,6 +1122,14 @@ class TestChunkerFactory:
         assert ".py" in extensions
         assert ".js" in extensions
         assert ".md" in extensions
+        # Check new language extensions
+        assert ".cs" in extensions
+        assert ".rs" in extensions
+        assert ".r" in extensions
+        assert ".java" in extensions
+        assert ".go" in extensions
+        assert ".swift" in extensions
+        assert ".kt" in extensions
         assert len(extensions) > 0
 
 

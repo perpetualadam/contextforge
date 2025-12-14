@@ -150,7 +150,7 @@ class ContextItem extends vscode.TreeItem {
 }
 
 class ContextForgeWebviewProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'contextforge.resultsView';
+    public static readonly viewType = 'contextforge.indexView';
 
     private _view?: vscode.WebviewView;
 
@@ -553,11 +553,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // Create tree data provider
+    // Create provider for refresh functionality
     const provider = new ContextForgeProvider(config);
-    vscode.window.registerTreeDataProvider('contextforge.indexView', provider);
 
-    // Create webview provider
+    // Create webview provider for index view
     const webviewProvider = new ContextForgeWebviewProvider(context.extensionUri, config);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ContextForgeWebviewProvider.viewType, webviewProvider)

@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# VS Code Extension build artifacts (keep source, ignore built files)
+vscode-extension/out/
+vscode-extension/*.vsix
+
+# Local data
+data/
+*.db
+*.sqlite
+
+# Redis
+dump.rdb
+
