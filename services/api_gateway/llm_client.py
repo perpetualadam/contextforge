@@ -4,20 +4,37 @@ Supports local (Ollama, LM Studio) and remote (OpenAI, Anthropic, Mistral) LLMs.
 """
 
 import os
+import sys
 import time
 import json
 import logging
 import re
 from typing import Dict, List, Optional, Any
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# Add parent directory to path for services imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
-DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+# Try to use unified config, fallback to env vars
+try:
+    from services.config import get_config
+    _config = get_config()
+    DEFAULT_TIMEOUT = _config.llm.timeout
+    DEFAULT_MAX_TOKENS = _config.llm.max_tokens
+    DEFAULT_TEMPERATURE = _config.llm.temperature
+    CONFIG_AVAILABLE = True
+except ImportError:
+    DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
+    DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+    DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    _config = None
+    CONFIG_AVAILABLE = False
 
 
 def mask_sensitive_data(text: str) -> str:
@@ -69,32 +86,37 @@ class BaseAdapter(ABC):
 
 class OllamaAdapter(BaseAdapter):
     """Ollama local LLM adapter."""
-    
+
     def __init__(self, url: Optional[str] = None):
         super().__init__("ollama")
-        self.url = url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-        self.default_model = os.getenv("OLLAMA_MODEL", "mistral")
-    
+        # Use unified config if available
+        if CONFIG_AVAILABLE and _config:
+            self.url = url or _config.llm.ollama_url
+            self.default_model = _config.llm.ollama_model
+        else:
+            self.url = url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+            self.default_model = os.getenv("OLLAMA_MODEL", "mistral")
+
     def is_available(self) -> bool:
         try:
-            response = requests.get(f"{self.url.replace('/api/generate', '')}/api/tags", 
+            response = requests.get(f"{self.url.replace('/api/generate', '')}/api/tags",
                                   timeout=5)
             return response.status_code == 200
         except Exception:
             return False
-    
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate(self, prompt: str, model: Optional[str] = None, 
+    def generate(self, prompt: str, model: Optional[str] = None,
                 max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
         start_time = time.time()
-        
+
         payload = {
             "model": model or self.default_model,
             "prompt": prompt,
             "stream": False,
             "options": {
                 "num_predict": max_tokens,
-                "temperature": kwargs.get("temperature", 0.7)
+                "temperature": kwargs.get("temperature", DEFAULT_TEMPERATURE)
             }
         }
         
@@ -119,27 +141,31 @@ class OllamaAdapter(BaseAdapter):
 
 class LMStudioAdapter(BaseAdapter):
     """LM Studio local LLM adapter."""
-    
+
     def __init__(self, url: Optional[str] = None):
         super().__init__("lm_studio")
-        self.url = url or os.getenv("LM_STUDIO_URL", "http://localhost:8085/generate")
-    
+        # Use unified config if available
+        if CONFIG_AVAILABLE and _config:
+            self.url = url or _config.llm.lm_studio_url
+        else:
+            self.url = url or os.getenv("LM_STUDIO_URL", "http://localhost:8085/generate")
+
     def is_available(self) -> bool:
         try:
             response = requests.get(self.url.replace("/generate", "/health"), timeout=5)
             return response.status_code == 200
         except Exception:
             return False
-    
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate(self, prompt: str, model: Optional[str] = None, 
+    def generate(self, prompt: str, model: Optional[str] = None,
                 max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
         start_time = time.time()
-        
+
         payload = {
             "prompt": prompt,
             "max_tokens": max_tokens,
-            "temperature": kwargs.get("temperature", 0.7),
+            "temperature": kwargs.get("temperature", DEFAULT_TEMPERATURE),
             "stop": kwargs.get("stop", [])
         }
         
@@ -163,34 +189,38 @@ class LMStudioAdapter(BaseAdapter):
 
 class OpenAIAdapter(BaseAdapter):
     """OpenAI API adapter."""
-    
+
     def __init__(self):
         super().__init__("openai")
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        # Use unified config if available
+        if CONFIG_AVAILABLE and _config:
+            self.api_key = _config.llm.openai_api_key
+        else:
+            self.api_key = os.getenv("OPENAI_API_KEY")
         self.base_url = "https://api.openai.com/v1/chat/completions"
         self.default_model = "gpt-3.5-turbo"
-    
+
     def is_available(self) -> bool:
         return bool(self.api_key)
-    
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate(self, prompt: str, model: Optional[str] = None, 
+    def generate(self, prompt: str, model: Optional[str] = None,
                 max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
         if not self.api_key:
             raise LLMError("OpenAI API key not configured")
-        
+
         start_time = time.time()
-        
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": model or self.default_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
-            "temperature": kwargs.get("temperature", 0.7)
+            "temperature": kwargs.get("temperature", DEFAULT_TEMPERATURE)
         }
         
         try:
@@ -217,13 +247,17 @@ class OpenAIAdapter(BaseAdapter):
 
 class AnthropicAdapter(BaseAdapter):
     """Anthropic Claude API adapter."""
-    
+
     def __init__(self):
         super().__init__("anthropic")
-        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        # Use unified config if available
+        if CONFIG_AVAILABLE and _config:
+            self.api_key = _config.llm.anthropic_api_key
+        else:
+            self.api_key = os.getenv("ANTHROPIC_API_KEY")
         self.base_url = "https://api.anthropic.com/v1/messages"
         self.default_model = "claude-3-sonnet-20240229"
-    
+
     def is_available(self) -> bool:
         return bool(self.api_key)
     

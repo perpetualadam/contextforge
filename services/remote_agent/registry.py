@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from threading import Lock
 
 from .models import AgentInfo, AgentStatus, AgentRegistration, HeartbeatRequest
+from services.utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class AgentRegistry:
             if not agent:
                 return False
             
-            agent.last_heartbeat = datetime.utcnow()
+            agent.last_heartbeat = utc_now()
             agent.status = request.status
             agent.current_tasks = request.current_tasks
             agent.metadata.update(request.metadata)
@@ -126,7 +127,7 @@ class AgentRegistry:
     
     def check_health(self) -> List[str]:
         """Check agent health and mark unhealthy agents."""
-        now = datetime.utcnow()
+        now = utc_now()
         unhealthy = []
         
         with self._lock:

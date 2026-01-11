@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import sys
 import logging
 import hashlib
 import secrets
@@ -31,9 +32,21 @@ from docx import Document
 from PIL import Image
 import uuid
 
+# Add parent directory to path for services imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from rag import RAGPipeline
 from llm_client import LLMClient
 from search_adapter import SearchAdapter
+
+# Import unified configuration
+try:
+    from services.config import get_config
+    _config = get_config()
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    _config = None
 
 # Import remote agent routes
 try:
@@ -63,24 +76,36 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Service URLs
-VECTOR_INDEX_URL = os.getenv("VECTOR_INDEX_URL", "http://vector-index:8001")
-PREPROCESSOR_URL = os.getenv("PREPROCESSOR_URL", "http://preprocessor:8003")
-CONNECTOR_URL = os.getenv("CONNECTOR_URL", "http://connector:8002")
-WEB_FETCHER_URL = os.getenv("WEB_FETCHER_URL", "http://web-fetcher:8004")
-TERMINAL_EXECUTOR_URL = os.getenv("TERMINAL_EXECUTOR_URL", "http://terminal-executor:8006")
+# Service URLs - Use unified config if available, fallback to env vars
+if CONFIG_AVAILABLE and _config:
+    VECTOR_INDEX_URL = _config.services.vector_index
+    PREPROCESSOR_URL = _config.services.preprocessor
+    CONNECTOR_URL = _config.services.connector
+    WEB_FETCHER_URL = _config.services.web_fetcher
+    TERMINAL_EXECUTOR_URL = _config.services.terminal_executor
+else:
+    VECTOR_INDEX_URL = os.getenv("VECTOR_INDEX_URL", "http://vector-index:8001")
+    PREPROCESSOR_URL = os.getenv("PREPROCESSOR_URL", "http://preprocessor:8003")
+    CONNECTOR_URL = os.getenv("CONNECTOR_URL", "http://connector:8002")
+    WEB_FETCHER_URL = os.getenv("WEB_FETCHER_URL", "http://web-fetcher:8004")
+    TERMINAL_EXECUTOR_URL = os.getenv("TERMINAL_EXECUTOR_URL", "http://terminal-executor:8006")
 
 # CORS Configuration - Security hardened
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
 ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 ALLOWED_HEADERS = ["Content-Type", "Authorization"]
 
-# Security Configuration
+# Security Configuration - Use unified config if available
+if CONFIG_AVAILABLE and _config:
+    RATE_LIMIT_REQUESTS = _config.security.rate_limit_requests if hasattr(_config, 'security') else 100
+    RATE_LIMIT_WINDOW = _config.security.rate_limit_window if hasattr(_config, 'security') else 60
+else:
+    RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
+    RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+
 API_KEY_ENABLED = os.getenv("API_KEY_ENABLED", "false").lower() == "true"
 API_KEYS = set(os.getenv("API_KEYS", "").split(",")) if os.getenv("API_KEYS") else set()
 RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
-RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))  # requests per window
-RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # window in seconds
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))  # max file upload size
 
 # Security utilities
@@ -319,6 +344,20 @@ class PromptEnhancementResponse(BaseModel):
     improvements: List[str]
 
 
+class OrchestrationRequest(BaseModel):
+    """Request for production orchestration."""
+    repo_path: str = Field(..., max_length=1024)
+    mode: str = Field("auto", pattern="^(auto|online|offline)$")
+    task: str = Field("full_analysis", max_length=100)
+    output_format: str = Field("markdown", pattern="^(markdown|json|xml)$")
+
+    @validator('repo_path')
+    def validate_repo_path(cls, v):
+        if '..' in v:
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
 # Health check endpoint (no auth/rate limit for health checks)
 @app.get("/health")
 async def health_check():
@@ -408,6 +447,203 @@ async def get_ingestion_status():
     except Exception as e:
         logger.error("Failed to get ingestion status", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to get status: {e}")
+
+
+# Production Orchestration endpoint
+@app.post("/orchestrate")
+async def run_orchestration(
+    request: OrchestrationRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
+    """
+    Run production orchestration on a repository.
+
+    This endpoint provides multi-agent analysis with automatic
+    LLM routing (cloud/local) based on connectivity.
+
+    Returns structured analysis in the requested format.
+    """
+    await check_rate_limit(http_request)
+
+    try:
+        logger.info(
+            "Starting orchestration",
+            repo_path=request.repo_path,
+            mode=request.mode,
+            task=request.task
+        )
+
+        # Import and run orchestration
+        from services.core import production_run
+
+        result = production_run(
+            repo_path=request.repo_path,
+            mode=request.mode,
+            task=request.task,
+            output_format=request.output_format
+        )
+
+        logger.info(
+            "Orchestration completed",
+            success=result.get("success"),
+            duration_ms=result.get("duration_ms"),
+            offline_mode=result.get("offline_mode")
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error("Orchestration failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Orchestration failed: {e}")
+
+
+@app.get("/orchestrate/status")
+async def get_orchestration_status():
+    """Get current LLM routing status and connectivity."""
+    try:
+        from services.core import check_internet, LLMRouter
+
+        is_online = check_internet()
+        router = LLMRouter(mode="auto")
+
+        return {
+            "internet_available": is_online,
+            "current_mode": "online" if not router.offline_mode else "offline",
+            "backends": {
+                "cloud": is_online,
+                "ollama": _check_local_llm("ollama"),
+                "lm_studio": _check_local_llm("lm_studio")
+            }
+        }
+    except Exception as e:
+        logger.error("Failed to get orchestration status", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {e}")
+
+
+def _check_local_llm(backend: str) -> bool:
+    """Check if local LLM backend is available."""
+    import requests as req
+    try:
+        if backend == "ollama":
+            resp = req.get("http://localhost:11434/api/tags", timeout=2)
+            return resp.status_code == 200
+        elif backend == "lm_studio":
+            resp = req.get("http://localhost:1234/v1/models", timeout=2)
+            return resp.status_code == 200
+    except Exception:
+        pass
+    return False
+
+
+# Agent Status endpoints
+@app.get("/agents/status")
+async def get_agent_status():
+    """
+    Get status of all registered agents.
+
+    Returns information about:
+    - Local vs remote agents
+    - Agent capabilities
+    - Current LLM mode
+    """
+    try:
+        from services.core import get_enhanced_orchestrator
+
+        orchestrator = get_enhanced_orchestrator()
+        return orchestrator.get_agent_status()
+    except Exception as e:
+        logger.error("Failed to get agent status", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {e}")
+
+
+@app.get("/agents/list")
+async def list_all_agents():
+    """List all registered agents with their details."""
+    try:
+        from services.core import list_agents
+
+        return {
+            "agents": list_agents(),
+            "total": len(list_agents())
+        }
+    except Exception as e:
+        logger.error("Failed to list agents", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to list agents: {e}")
+
+
+@app.post("/agents/pipeline")
+async def run_pipeline(
+    request: OrchestrationRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
+    """
+    Run the enhanced agent pipeline.
+
+    This uses the new EnhancedOrchestrator with:
+    - Incremental code indexing
+    - Multi-agent coordination
+    - Local/remote agent routing
+    """
+    await check_rate_limit(http_request)
+
+    try:
+        from services.core import run_agent_pipeline
+        import asyncio
+
+        logger.info(
+            "Starting agent pipeline",
+            repo_path=request.repo_path,
+            mode=request.mode,
+            task=request.task
+        )
+
+        result = await run_agent_pipeline(
+            repo_path=request.repo_path,
+            mode=request.mode,
+            task=request.task
+        )
+
+        logger.info(
+            "Pipeline completed",
+            success=result.get("success"),
+            duration_ms=result.get("duration_ms"),
+            agents_executed=len(result.get("agents_executed", []))
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error("Pipeline failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+
+@app.get("/index/stats")
+async def get_index_stats():
+    """Get code index statistics."""
+    try:
+        from services.core import get_code_index
+
+        index = get_code_index()
+        return index.get_stats()
+    except Exception as e:
+        logger.error("Failed to get index stats", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get index stats: {e}")
+
+
+@app.post("/index/search")
+async def search_index(query: str, top_k: int = 10):
+    """Search the code index."""
+    try:
+        from services.core import get_code_index
+
+        index = get_code_index()
+        results = index.search(query, top_k=top_k)
+        return {"query": query, "results": results, "count": len(results)}
+    except Exception as e:
+        logger.error("Index search failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Index search failed: {e}")
 
 
 # Query endpoints
@@ -1116,20 +1352,49 @@ async def get_index_stats():
 @app.get("/config")
 async def get_configuration():
     """Get current configuration."""
-    return {
-        "llm_priority": os.getenv("LLM_PRIORITY", "ollama,mock").split(","),
-        "enable_web_search": os.getenv("ENABLE_WEB_SEARCH", "True").lower() == "true",
-        "vector_top_k": int(os.getenv("VECTOR_TOP_K", "10")),
-        "web_search_results": int(os.getenv("WEB_SEARCH_RESULTS", "5")),
-        "privacy_mode": os.getenv("PRIVACY_MODE", "local"),
-        "services": {
-            "vector_index": VECTOR_INDEX_URL,
-            "preprocessor": PREPROCESSOR_URL,
-            "connector": CONNECTOR_URL,
-            "web_fetcher": WEB_FETCHER_URL,
-            "terminal_executor": TERMINAL_EXECUTOR_URL
+    if CONFIG_AVAILABLE and _config:
+        return {
+            "llm_priority": _config.llm.priority,
+            "enable_web_search": _config.web_search.enabled if hasattr(_config, 'web_search') else False,
+            "vector_top_k": _config.indexing.vector_top_k,
+            "privacy_mode": _config.privacy.privacy_mode,
+            "hybrid_search_enabled": _config.indexing.hybrid_search_enabled,
+            "services": {
+                "vector_index": _config.services.vector_index,
+                "preprocessor": _config.services.preprocessor,
+                "connector": _config.services.connector,
+                "web_fetcher": _config.services.web_fetcher,
+                "terminal_executor": _config.services.terminal_executor
+            },
+            "scaling": {
+                "parallel_indexing": _config.scaling.parallel_indexing_enabled,
+                "max_workers": _config.scaling.max_indexing_workers,
+                "incremental_index": _config.scaling.incremental_index_enabled
+            },
+            "database": {
+                "type": _config.database.db_type,
+                "use_postgres": _config.database.use_postgres
+            },
+            "cache": {
+                "use_redis": _config.redis.use_redis
+            }
         }
-    }
+    else:
+        # Fallback to environment variables
+        return {
+            "llm_priority": os.getenv("LLM_PRIORITY", "ollama,mock").split(","),
+            "enable_web_search": os.getenv("ENABLE_WEB_SEARCH", "True").lower() == "true",
+            "vector_top_k": int(os.getenv("VECTOR_TOP_K", "10")),
+            "web_search_results": int(os.getenv("WEB_SEARCH_RESULTS", "5")),
+            "privacy_mode": os.getenv("PRIVACY_MODE", "local"),
+            "services": {
+                "vector_index": VECTOR_INDEX_URL,
+                "preprocessor": PREPROCESSOR_URL,
+                "connector": CONNECTOR_URL,
+                "web_fetcher": WEB_FETCHER_URL,
+                "terminal_executor": TERMINAL_EXECUTOR_URL
+            }
+        }
 
 
 # Terminal execution endpoints
@@ -1404,3 +1669,422 @@ def is_command_whitelisted(command: str, whitelist: List[str]) -> bool:
                 return True
 
     return False
+
+
+# =============================================================================
+# Prompt Enhancement Endpoints
+# =============================================================================
+
+class PromptEnhanceRequest(BaseModel):
+    """Request for prompt enhancement."""
+    prompt: str = Field(..., description="Original prompt to enhance")
+    context: Optional[str] = Field(None, description="Additional context")
+    task_type: Optional[str] = Field("general", description="Task type: code_review, bug_detection, test_generation, etc.")
+    code: Optional[str] = Field(None, description="Code to include")
+    file_path: Optional[str] = Field(None, description="File path for context gathering")
+    include_embeddings: bool = Field(True, description="Include semantic embeddings")
+    include_git: bool = Field(True, description="Include git history")
+    include_tests: bool = Field(True, description="Include test results")
+    max_tokens: int = Field(4096, description="Max tokens for enhanced prompt")
+
+
+class PromptEnhanceResponse(BaseModel):
+    """Response with enhanced prompt."""
+    original: str
+    enhanced: str
+    context_sections: List[str]
+    estimated_tokens: int
+    task_type: str
+
+
+@app.post("/prompts/context-enhance", response_model=PromptEnhanceResponse, tags=["prompts"])
+async def context_enhance_prompt(request: PromptEnhanceRequest):
+    """
+    Enhance a prompt with context-aware injection.
+
+    Automatically injects:
+    - Module summaries
+    - Semantic embeddings
+    - Recent test results
+    - Git history
+    """
+    try:
+        from services.prompt_enhancer import (
+            PromptBuilder, TaskType, ContextData, get_context_aggregator
+        )
+
+        # Map string task type to enum
+        task_type_map = {
+            "code_review": TaskType.CODE_REVIEW,
+            "bug_detection": TaskType.BUG_DETECTION,
+            "test_generation": TaskType.TEST_GENERATION,
+            "refactor": TaskType.REFACTOR,
+            "documentation": TaskType.DOCUMENTATION,
+            "security_audit": TaskType.SECURITY_AUDIT,
+            "general": TaskType.GENERAL
+        }
+        task_type = task_type_map.get(request.task_type, TaskType.GENERAL)
+
+        # Gather context
+        aggregator = get_context_aggregator()
+        context = await aggregator.gather_context(
+            query=request.prompt,
+            file_path=request.file_path,
+            include_git=request.include_git,
+            include_tests=request.include_tests
+        )
+
+        # Add custom context
+        if request.context:
+            context.module_summary = request.context
+
+        # Build enhanced prompt
+        builder = PromptBuilder(max_tokens=request.max_tokens)
+        enhanced = builder.build_prompt(
+            task_type=task_type,
+            context=context,
+            code=request.code or "",
+            query=request.prompt
+        )
+
+        # Extract context sections for transparency
+        context_sections = []
+        if context.module_summary:
+            context_sections.append("module_summary")
+        if context.file_embeddings:
+            context_sections.append("embeddings")
+        if context.test_results:
+            context_sections.append("test_results")
+        if context.git_history:
+            context_sections.append("git_history")
+
+        return PromptEnhanceResponse(
+            original=request.prompt,
+            enhanced=enhanced,
+            context_sections=context_sections,
+            estimated_tokens=len(enhanced) // 4,
+            task_type=task_type.value
+        )
+
+    except Exception as e:
+        logger.error(f"Prompt enhancement failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Enhancement failed: {e}")
+
+
+# =============================================================================
+# Code Analysis Endpoints
+# =============================================================================
+
+class CodeAnalysisRequest(BaseModel):
+    """Request for code analysis."""
+    file_path: Optional[str] = Field(None, description="Path to file to analyze")
+    content: Optional[str] = Field(None, description="Code content to analyze")
+    language: str = Field("python", description="Programming language")
+    analyzers: Optional[List[str]] = Field(None, description="Specific analyzers to run")
+
+
+class CodeReviewRequest(BaseModel):
+    """Request for AI-powered code review."""
+    file_path: Optional[str] = Field(None, description="Path to file")
+    content: Optional[str] = Field(None, description="Code content")
+    include_static_analysis: bool = Field(True, description="Run static analyzers")
+    focus: str = Field("general", description="Review focus: general, security, performance")
+
+
+@app.post("/analysis/static", tags=["analysis"])
+async def run_static_analysis(request: CodeAnalysisRequest):
+    """
+    Run static analysis on code.
+
+    Runs available analyzers (pylint, flake8, mypy, bandit) and returns findings.
+    """
+    try:
+        from services.code_analysis import get_code_analyzer, AnalyzerType
+
+        if not request.file_path and not request.content:
+            raise HTTPException(status_code=400, detail="Either file_path or content required")
+
+        analyzer = get_code_analyzer()
+
+        if request.content:
+            results = await analyzer.analyze_content(request.content, request.language)
+        else:
+            results = await analyzer.analyze_file(request.file_path)
+
+        return {
+            "results": [
+                {
+                    "analyzer": r.analyzer,
+                    "type": r.analyzer_type.value,
+                    "issues": [
+                        {
+                            "rule": i.rule,
+                            "message": i.message,
+                            "line": i.line,
+                            "severity": i.severity.value
+                        }
+                        for i in r.issues
+                    ],
+                    "summary": r.summary,
+                    "error": r.error,
+                    "duration_ms": r.duration_ms
+                }
+                for r in results
+            ],
+            "formatted": analyzer.format_for_prompt(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Static analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analysis/review", tags=["analysis"])
+async def ai_code_review(request: CodeReviewRequest):
+    """
+    Perform AI-powered code review.
+
+    Combines static analysis with LLM-powered review suggestions.
+    """
+    try:
+        from services.orchestrator import get_review_agent
+
+        if not request.file_path and not request.content:
+            raise HTTPException(status_code=400, detail="Either file_path or content required")
+
+        agent = get_review_agent()
+
+        if request.file_path:
+            result = await agent.review_file(
+                request.file_path,
+                content=request.content,
+                include_static_analysis=request.include_static_analysis
+            )
+        else:
+            # Write content to temp file for analysis
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(request.content)
+                temp_path = f.name
+
+            try:
+                result = await agent.review_file(
+                    temp_path,
+                    include_static_analysis=request.include_static_analysis
+                )
+            finally:
+                Path(temp_path).unlink(missing_ok=True)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Code review failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analysis/bugs", tags=["analysis"])
+async def detect_bugs(request: CodeReviewRequest):
+    """
+    Specialized bug detection.
+
+    Focuses on finding potential bugs, security issues, and logic errors.
+    """
+    try:
+        from services.orchestrator import get_review_agent
+
+        if not request.file_path and not request.content:
+            raise HTTPException(status_code=400, detail="Either file_path or content required")
+
+        agent = get_review_agent()
+
+        if request.file_path:
+            result = await agent.detect_bugs(request.file_path, request.content)
+        else:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(request.content)
+                temp_path = f.name
+
+            try:
+                result = await agent.detect_bugs(temp_path)
+            finally:
+                Path(temp_path).unlink(missing_ok=True)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Bug detection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Dependency Analysis Endpoints
+# =============================================================================
+
+class DependencyRequest(BaseModel):
+    """Request for dependency analysis."""
+    file_path: str = Field(..., description="File to analyze")
+    analyze_impact: bool = Field(True, description="Include impact analysis")
+
+
+@app.post("/analysis/dependencies", tags=["analysis"])
+async def analyze_dependencies(request: DependencyRequest):
+    """
+    Analyze file dependencies and potential impact of changes.
+    """
+    try:
+        from services.dependency_graph import get_dependency_graph
+
+        graph = get_dependency_graph()
+
+        # Add file if not already analyzed
+        deps = graph.add_file(request.file_path)
+
+        result = {
+            "file": request.file_path,
+            "imports": graph.get_dependencies(request.file_path),
+            "imported_by": graph.get_dependents(request.file_path),
+            "dependencies_found": len(deps)
+        }
+
+        if request.analyze_impact:
+            impact = graph.analyze_impact(request.file_path)
+            result["impact"] = {
+                "directly_affected": impact.directly_affected,
+                "transitively_affected": impact.transitively_affected,
+                "test_files_affected": impact.test_files_affected,
+                "risk_level": impact.risk_level,
+                "summary": impact.summary
+            }
+
+        result["formatted"] = graph.format_for_prompt(request.file_path)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Dependency analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analysis/dependency-graph", tags=["analysis"])
+async def get_dependency_graph_viz():
+    """
+    Get the dependency graph for visualization.
+
+    Returns nodes and edges suitable for graph visualization.
+    """
+    try:
+        from services.dependency_graph import get_dependency_graph
+
+        graph = get_dependency_graph()
+        module_graph = graph.get_module_graph()
+
+        return {
+            **module_graph,
+            "mermaid": graph.to_mermaid()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get dependency graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Test Generation Endpoints
+# =============================================================================
+
+class TestGenerationRequest(BaseModel):
+    """Request for test generation."""
+    file_path: Optional[str] = None
+    content: Optional[str] = None
+    test_framework: str = Field("pytest", description="Test framework to use")
+    language: str = Field("python", description="Programming language")
+
+
+@app.post("/tests/generate", tags=["testing"])
+async def generate_tests(request: TestGenerationRequest):
+    """
+    Generate unit tests for code.
+    """
+    try:
+        from services.orchestrator import get_test_agent
+
+        if not request.file_path and not request.content:
+            raise HTTPException(status_code=400, detail="Either file_path or content required")
+
+        agent = get_test_agent()
+        result = await agent.generate_tests(
+            file_path=request.file_path or "temp_file.py",
+            content=request.content,
+            test_framework=request.test_framework
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Test generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TestRunRequest(BaseModel):
+    """Request to run tests."""
+    test_path: str = Field("tests/", description="Path to test directory or file")
+    pattern: Optional[str] = Field(None, description="Test pattern to match")
+
+
+@app.post("/tests/run", tags=["testing"])
+async def run_tests(request: TestRunRequest):
+    """
+    Run tests and return results.
+    """
+    try:
+        from services.orchestrator import get_test_agent
+
+        agent = get_test_agent()
+        result = await agent.run_tests(
+            test_path=request.test_path,
+            pattern=request.pattern
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Test run failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Documentation Generation Endpoints
+# =============================================================================
+
+class DocGenerationRequest(BaseModel):
+    """Request for documentation generation."""
+    file_path: Optional[str] = None
+    content: Optional[str] = None
+    doc_style: str = Field("Google", description="Doc style: Google, NumPy, Sphinx")
+    language: str = Field("python", description="Programming language")
+
+
+@app.post("/docs/generate", tags=["documentation"])
+async def generate_docs(request: DocGenerationRequest):
+    """
+    Generate documentation for code.
+    """
+    try:
+        from services.orchestrator import get_doc_agent
+
+        if not request.file_path and not request.content:
+            raise HTTPException(status_code=400, detail="Either file_path or content required")
+
+        agent = get_doc_agent()
+        result = await agent.generate_docs(
+            file_path=request.file_path or "temp_file.py",
+            content=request.content,
+            doc_style=request.doc_style
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Documentation generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

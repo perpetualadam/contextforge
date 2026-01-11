@@ -4,6 +4,7 @@ import * as path from 'path';
 import { ContextForgeChatProvider } from './chatPanel';
 import { ContextForgePromptProvider } from './promptPanel';
 import { GitIntegration } from './gitIntegration';
+import { AgentStatusProvider } from './agentPanel';
 
 interface ContextForgeConfig {
     apiUrl: string;
@@ -575,6 +576,12 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerWebviewViewProvider(ContextForgePromptProvider.viewType, promptProvider)
     );
 
+    // Create agent status provider
+    const agentProvider = new AgentStatusProvider(context.extensionUri, config);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(AgentStatusProvider.viewType, agentProvider)
+    );
+
     // Create status bar item for auto-terminal mode
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.command = 'contextforge.toggleAutoTerminal';
@@ -832,6 +839,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (e.affectsConfiguration('contextforge')) {
             const newConfig = getConfig();
             chatProvider.updateConfig(newConfig);
+            agentProvider.updateConfig(newConfig);
 
             // Update Git integration config
             if (gitIntegration && newConfig.gitEnabled) {
@@ -1020,6 +1028,15 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    // Orchestration commands
+    const runOrchestrationCommand = vscode.commands.registerCommand('contextforge.runOrchestration', async () => {
+        await runOrchestration(config, webviewProvider);
+    });
+
+    const checkLLMStatusCommand = vscode.commands.registerCommand('contextforge.checkLLMStatus', async () => {
+        await checkLLMStatus(config);
+    });
+
     context.subscriptions.push(
         askCommand,
         ingestCommand,
@@ -1039,7 +1056,9 @@ export function activate(context: vscode.ExtensionContext) {
         gitPullCommand,
         gitBranchCommand,
         githubPRCommand,
-        githubIssuesCommand
+        githubIssuesCommand,
+        runOrchestrationCommand,
+        checkLLMStatusCommand
     );
 
     // Auto-ingest on startup if enabled
@@ -1384,6 +1403,150 @@ Do you want to enable Auto Terminal Mode?`;
     }
 
     updateStatusBar();
+}
+
+async function runOrchestration(config: ContextForgeConfig, webviewProvider: ContextForgeWebviewProvider) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+    }
+
+    const repoPath = workspaceFolders[0].uri.fsPath;
+
+    // Select analysis mode
+    const modeSelection = await vscode.window.showQuickPick([
+        { label: '$(radio-tower) Auto', description: 'Auto-detect cloud/local LLM', value: 'auto' },
+        { label: '$(cloud) Online', description: 'Force cloud LLM', value: 'online' },
+        { label: '$(server) Offline', description: 'Force local LLM (Ollama/LM Studio)', value: 'offline' }
+    ], { placeHolder: 'Select LLM mode' });
+
+    if (!modeSelection) {
+        return;
+    }
+
+    // Select analysis task
+    const taskSelection = await vscode.window.showQuickPick([
+        { label: '$(beaker) Full Analysis', description: 'Complete architecture + code review', value: 'full_analysis' },
+        { label: '$(organization) Architecture', description: 'Architecture analysis only', value: 'architecture' },
+        { label: '$(checklist) Code Review', description: 'Code review only', value: 'code_review' }
+    ], { placeHolder: 'Select analysis type' });
+
+    if (!taskSelection) {
+        return;
+    }
+
+    const progress = vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Running ContextForge Analysis...",
+        cancellable: false
+    }, async (progress) => {
+        try {
+            progress.report({ increment: 0, message: `Mode: ${modeSelection.value}, Task: ${taskSelection.value}` });
+
+            const response = await axios.post(`${config.apiUrl}/orchestrate`, {
+                repo_path: repoPath,
+                mode: modeSelection.value,
+                task: taskSelection.value,
+                output_format: 'markdown'
+            });
+
+            const result = response.data;
+            progress.report({ increment: 100, message: 'Complete!' });
+
+            // Show result in webview
+            const orchestrationResult = {
+                question: `Analysis: ${taskSelection.label} (${modeSelection.label})`,
+                answer: formatOrchestrationResult(result),
+                contexts: [],
+                web_results: [],
+                meta: {
+                    backend: result.offline_mode ? 'local' : 'cloud',
+                    total_latency_ms: result.duration_ms,
+                    num_contexts: 0,
+                    num_web_results: 0
+                }
+            };
+
+            webviewProvider.showResults(orchestrationResult);
+
+            // Show success notification
+            const modeIcon = result.offline_mode ? '🖥️ Local' : '☁️ Cloud';
+            vscode.window.showInformationMessage(
+                `✅ Analysis complete! ${modeIcon} LLM | ${result.duration_ms}ms`,
+                'Open Context File'
+            ).then(selection => {
+                if (selection === 'Open Context File' && result.context_file) {
+                    vscode.workspace.openTextDocument(result.context_file).then(doc => {
+                        vscode.window.showTextDocument(doc);
+                    });
+                }
+            });
+
+        } catch (error) {
+            vscode.window.showErrorMessage(`Orchestration failed: ${error}`);
+        }
+    });
+}
+
+function formatOrchestrationResult(result: any): string {
+    let output = `# ContextForge Analysis Results\n\n`;
+    output += `**Status:** ${result.success ? '✅ Success' : '❌ Failed'}\n`;
+    output += `**Mode:** ${result.offline_mode ? '🖥️ Local LLM' : '☁️ Cloud LLM'}\n`;
+    output += `**Duration:** ${result.duration_ms}ms\n`;
+    output += `**Agents Used:** ${result.agents_used?.join(', ') || 'None'}\n\n`;
+
+    if (result.analysis?.scan) {
+        output += `## Repository Scan\n`;
+        output += `- Files: ${result.analysis.scan.files}\n`;
+        output += `- Languages: ${result.analysis.scan.languages?.join(', ')}\n\n`;
+    }
+
+    if (result.analysis?.architecture) {
+        output += `## Architecture Analysis\n`;
+        output += `${result.analysis.architecture.summary || 'N/A'}\n\n`;
+    }
+
+    if (result.analysis?.review) {
+        output += `## Code Review\n`;
+        output += `${result.analysis.review.findings || 'N/A'}\n\n`;
+    }
+
+    if (result.context_file) {
+        output += `---\n📄 Context file saved to: \`${result.context_file}\`\n`;
+    }
+
+    if (result.errors?.length > 0) {
+        output += `\n## Errors\n`;
+        result.errors.forEach((err: string) => {
+            output += `- ⚠️ ${err}\n`;
+        });
+    }
+
+    return output;
+}
+
+async function checkLLMStatus(config: ContextForgeConfig) {
+    try {
+        const response = await axios.get(`${config.apiUrl}/orchestrate/status`);
+        const status = response.data;
+
+        const items = [
+            `$(globe) Internet: ${status.internet_available ? '✅ Available' : '❌ Unavailable'}`,
+            `$(server) Current Mode: ${status.current_mode}`,
+            `$(cloud) Cloud LLM: ${status.backends?.cloud ? '✅' : '❌'}`,
+            `$(terminal) Ollama: ${status.backends?.ollama ? '✅ Running' : '❌ Not Running'}`,
+            `$(terminal) LM Studio: ${status.backends?.lm_studio ? '✅ Running' : '❌ Not Running'}`
+        ];
+
+        vscode.window.showQuickPick(items, {
+            placeHolder: 'LLM Backend Status',
+            canPickMany: false
+        });
+
+    } catch (error) {
+        vscode.window.showErrorMessage(`Failed to check LLM status: ${error}`);
+    }
 }
 
 export function deactivate() {

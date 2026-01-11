@@ -13,6 +13,7 @@ from queue import PriorityQueue
 import heapq
 
 from .models import TaskInfo, TaskRequest, TaskResult, TaskStatus, TaskPriority
+from services.utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class TaskQueue:
             
             if result_task:
                 result_task.status = TaskStatus.RUNNING
-                result_task.started_at = datetime.utcnow()
+                result_task.started_at = utc_now()
             
             return result_task
     
@@ -124,7 +125,7 @@ class TaskQueue:
             if not task:
                 return None
             
-            task.completed_at = datetime.utcnow()
+            task.completed_at = utc_now()
             task.status = TaskStatus.COMPLETED if not error else TaskStatus.FAILED
             task.result = result
             task.error = error
@@ -161,7 +162,7 @@ class TaskQueue:
                 return False
             
             task.status = TaskStatus.CANCELLED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = utc_now()
             logger.info(f"Task cancelled: {task_id}")
             return True
     

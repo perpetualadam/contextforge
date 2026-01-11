@@ -586,5 +586,5 @@ class ContextForgePromptProvider {
     }
 }
 exports.ContextForgePromptProvider = ContextForgePromptProvider;
-ContextForgePromptProvider.viewType = 'contextforge.promptPanel';
+ContextForgePromptProvider.viewType = 'contextforge.promptView';
 //# sourceMappingURL=promptPanel.js.map

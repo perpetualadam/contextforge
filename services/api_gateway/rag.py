@@ -5,10 +5,14 @@ Combines vector search, web search, and LLM generation.
 
 # Load environment variables early
 import pathlib
+import sys
 from dotenv import load_dotenv
 # Find .env file in project root (two levels up from this file)
 env_path = pathlib.Path(__file__).parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
+
+# Add parent directory to path for services imports
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 
 import os
 import logging
@@ -21,11 +25,31 @@ from search_adapter import SearchAdapter
 
 logger = logging.getLogger(__name__)
 
-# Configuration
-VECTOR_INDEX_URL = os.getenv("VECTOR_INDEX_URL", "http://vector-index:8001")
-ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "True").lower() == "true"
-VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "10"))
-WEB_SEARCH_RESULTS = int(os.getenv("WEB_SEARCH_RESULTS", "5"))
+# Try to use unified config, fallback to env vars
+try:
+    from services.config import get_config
+    from services.cache import RetrievalCache, MemoryCache
+    _config = get_config()
+    CONFIG_AVAILABLE = True
+
+    # Configuration from unified config
+    VECTOR_INDEX_URL = _config.services.vector_index
+    ENABLE_WEB_SEARCH = _config.web_search.enabled if hasattr(_config, 'web_search') else False
+    VECTOR_TOP_K = _config.indexing.vector_top_k
+    WEB_SEARCH_RESULTS = 5  # Default, could add to config
+
+    # Initialize retrieval cache
+    _retrieval_cache = RetrievalCache(backend=MemoryCache())
+except ImportError:
+    CONFIG_AVAILABLE = False
+    _config = None
+    _retrieval_cache = None
+
+    # Fallback to environment variables
+    VECTOR_INDEX_URL = os.getenv("VECTOR_INDEX_URL", "http://vector-index:8001")
+    ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "True").lower() == "true"
+    VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "10"))
+    WEB_SEARCH_RESULTS = int(os.getenv("WEB_SEARCH_RESULTS", "5"))
 
 # Prompt templates
 SYSTEM_PROMPT = """You are "ContextForge Assistant", an expert code assistant. Always follow:
@@ -54,14 +78,23 @@ INSTRUCTION:
 
 class RAGPipeline:
     """Main RAG pipeline orchestrator."""
-    
+
     def __init__(self):
         self.llm_client = LLMClient()
         self.search_adapter = SearchAdapter() if ENABLE_WEB_SEARCH else None
         self.vector_index_url = VECTOR_INDEX_URL
-    
-    def retrieve_contexts(self, query: str, top_k: int = VECTOR_TOP_K) -> List[Dict[str, Any]]:
-        """Retrieve relevant contexts from vector index."""
+        self._cache = _retrieval_cache  # Use global cache if available
+
+    def retrieve_contexts(self, query: str, top_k: int = VECTOR_TOP_K,
+                          use_cache: bool = True) -> List[Dict[str, Any]]:
+        """Retrieve relevant contexts from vector index with optional caching."""
+        # Check cache first
+        if use_cache and self._cache:
+            cached = self._cache.get_results(query, top_k=top_k)
+            if cached is not None:
+                logger.debug(f"Cache hit for query: {query[:50]}...")
+                return cached
+
         try:
             response = requests.post(
                 f"{self.vector_index_url}/search",
@@ -69,13 +102,31 @@ class RAGPipeline:
                 timeout=10
             )
             response.raise_for_status()
-            
+
             data = response.json()
-            return data.get("results", [])
-            
+            results = data.get("results", [])
+
+            # Cache the results
+            if use_cache and self._cache and results:
+                self._cache.set_results(query, results, top_k=top_k)
+
+            return results
+
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
             return []
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        if self._cache:
+            return self._cache.get_stats()
+        return {"enabled": False}
+
+    def clear_cache(self, pattern: Optional[str] = None) -> int:
+        """Clear the retrieval cache."""
+        if self._cache:
+            return self._cache.backend.clear(pattern)
+        return 0
     
     def search_web(self, query: str, num_results: int = WEB_SEARCH_RESULTS) -> List[Dict[str, Any]]:
         """Search the web for additional context."""

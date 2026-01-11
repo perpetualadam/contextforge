@@ -40,6 +40,17 @@ services:
       - "8001:8001"
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Enhanced Embedding Configuration
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-mpnet-base-v2}
+      - CODE_EMBEDDING_MODEL=${CODE_EMBEDDING_MODEL:-microsoft/codebert-base}
+      - USE_CODE_EMBEDDINGS=${USE_CODE_EMBEDDINGS:-true}
+      # Hybrid Retrieval Configuration
+      - HYBRID_SEARCH_ENABLED=${HYBRID_SEARCH_ENABLED:-true}
+      - DENSE_WEIGHT=${DENSE_WEIGHT:-0.7}
+      - LEXICAL_WEIGHT=${LEXICAL_WEIGHT:-0.3}
+      # Recency Boost Configuration
+      - RECENCY_BOOST_ENABLED=${RECENCY_BOOST_ENABLED:-true}
+      - RECENCY_BOOST_FACTOR=${RECENCY_BOOST_FACTOR:-0.1}
     volumes:
       - ./data/vector_index:/app/data
     networks:
@@ -51,6 +62,12 @@ services:
       - "8003:8003"
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Smart Chunking Configuration
+      - MIN_CHUNK_SIZE=${MIN_CHUNK_SIZE:-512}
+      - MAX_CHUNK_SIZE=${MAX_CHUNK_SIZE:-4096}
+      - DEFAULT_CHUNK_SIZE=${DEFAULT_CHUNK_SIZE:-2048}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
+      - MAX_OVERLAP=${MAX_OVERLAP:-400}
     networks:
       - contextforge
 
@@ -147,6 +164,66 @@ services:
       timeout: 5s
       retries: 5
 
+  # PostgreSQL for long-term persistence (optional)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=contextforge
+      - POSTGRES_PASSWORD=contextforge
+      - POSTGRES_DB=contextforge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - contextforge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Persistence Service
+  persistence:
+    build: ./services/persistence
+    ports:
+      - "8015:8010"
+    environment:
+      - USE_POSTGRES=${USE_POSTGRES:-false}
+      - DATABASE_URL=postgresql://contextforge:contextforge@postgres:5432/contextforge
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - postgres
+    networks:
+      - contextforge
+
+  # Web Dashboard
+  dashboard:
+    build: ./services/dashboard
+    ports:
+      - "8016:8011"
+    environment:
+      - PERSISTENCE_URL=http://persistence:8010
+      - VECTOR_INDEX_URL=http://vector-index:8001
+      - API_GATEWAY_URL=http://api_gateway:8080
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - persistence
+      - vector-index
+      - api_gateway
+    networks:
+      - contextforge
+
+  # Advanced Metrics Service
+  metrics:
+    build: ./services/metrics
+    ports:
+      - "8017:8012"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - contextforge
+
   # Additional worker agents can be added like this:
   # remote-agent-worker-1:
   #   build:
@@ -167,6 +244,7 @@ volumes:
   repo_data:
   web_cache:
   redis_data:
+  postgres_data:
 
 networks:
   contextforge:

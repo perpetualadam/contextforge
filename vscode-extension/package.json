@@ -138,6 +138,18 @@
         "title": "Open Prompt Generator",
         "category": "ContextForge",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "contextforge.runOrchestration",
+        "title": "Run Analysis (Auto LLM)",
+        "category": "ContextForge",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "contextforge.checkLLMStatus",
+        "title": "Check LLM Status",
+        "category": "ContextForge",
+        "icon": "$(pulse)"
       }
     ],
     "views": {
@@ -157,6 +169,12 @@
         {
           "id": "contextforge.promptView",
           "name": "ContextForge Prompt Generator",
+          "type": "webview",
+          "when": "contextforge.enabled"
+        },
+        {
+          "id": "contextforge.agentView",
+          "name": "Agent Status",
           "type": "webview",
           "when": "contextforge.enabled"
         }
@@ -287,6 +305,55 @@
           "type": "string",
           "default": "main",
           "description": "Default branch name for new repositories"
+        },
+        "contextforge.hierarchicalRetrieval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable hierarchical context retrieval (module → file → function)"
+        },
+        "contextforge.includeTestContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include test outcomes in context retrieval"
+        },
+        "contextforge.includeGitHistory": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include relevant git history in context retrieval"
+        },
+        "contextforge.parallelRetrieval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable parallel retrieval across modules for faster results"
+        },
+        "contextforge.cacheEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable caching of retrieval results for faster repeated queries"
+        },
+        "contextforge.cacheTTL": {
+          "type": "number",
+          "default": 3600,
+          "minimum": 60,
+          "maximum": 86400,
+          "description": "Cache time-to-live in seconds (default: 1 hour)"
+        },
+        "contextforge.incrementalIndexing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable incremental indexing (only re-index changed files)"
+        },
+        "contextforge.autoTerminalSafeOnly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only execute whitelisted commands in auto-terminal mode"
+        },
+        "contextforge.autoTerminalMaxOutput": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum characters of terminal output to capture"
         }
       }
     },

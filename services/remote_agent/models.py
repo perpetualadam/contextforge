@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import uuid
 
+from services.utils import utc_now
+
 
 class AgentStatus(str, Enum):
     """Agent status enumeration."""
@@ -39,6 +41,7 @@ class TaskPriority(int, Enum):
 
 class AgentCapability(str, Enum):
     """Agent capability types."""
+    # Core capabilities
     CODE_ANALYSIS = "code_analysis"
     WEB_SEARCH = "web_search"
     RAG_QUERY = "rag_query"
@@ -49,6 +52,13 @@ class AgentCapability(str, Enum):
     LLM_GENERATION = "llm_generation"
     BATCH_PROCESSING = "batch_processing"
 
+    # Specialized agent capabilities (per blueprint)
+    INDEX_AGENT = "index_agent"          # Updates embeddings per module
+    TEST_AGENT = "test_agent"            # Runs unit/integration tests
+    REVIEW_AGENT = "review_agent"        # Static analysis + bug detection
+    REFACTOR_AGENT = "refactor_agent"    # Multi-file reasoning & changes
+    DOC_AGENT = "doc_agent"              # Architecture notes + docstrings
+
 
 class AgentInfo(BaseModel):
     """Information about a registered agent."""
@@ -57,8 +67,8 @@ class AgentInfo(BaseModel):
     endpoint: str = ""
     capabilities: List[str] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.ONLINE
-    last_heartbeat: datetime = Field(default_factory=datetime.utcnow)
-    registered_at: datetime = Field(default_factory=datetime.utcnow)
+    last_heartbeat: datetime = Field(default_factory=utc_now)
+    registered_at: datetime = Field(default_factory=utc_now)
     current_tasks: int = 0
     max_concurrent_tasks: int = 5
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -81,7 +91,7 @@ class TaskInfo(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     priority: TaskPriority = TaskPriority.NORMAL
     status: TaskStatus = TaskStatus.PENDING
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     assigned_agent: Optional[str] = None

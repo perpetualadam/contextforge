@@ -14,6 +14,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services'))
 
+from services.utils import utc_now
 from remote_agent.models import (
     AgentInfo, AgentStatus, TaskInfo, TaskStatus, TaskPriority,
     AgentRegistration, TaskRequest, HeartbeatRequest, TaskResult,
@@ -207,7 +208,7 @@ class TestAgentRegistry:
         # Force agent's last_heartbeat to be old
         with self.registry._lock:
             self.registry._agents[agent.agent_id].last_heartbeat = (
-                datetime.utcnow() - timedelta(seconds=10)
+                utc_now() - timedelta(seconds=10)
             )
 
         unhealthy = self.registry.check_health()
@@ -1087,7 +1088,7 @@ class TestRedisBackend:
         task = TaskInfo(
             task_type="test",
             status=TaskStatus.RUNNING,
-            started_at=datetime.utcnow()
+            started_at=utc_now()
         )
         task_data = {
             "task_id": task.task_id,

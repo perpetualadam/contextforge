@@ -200,10 +200,10 @@ class ContextForgeChatProvider {
         if (!this._config.chatHistoryEnabled)
             return;
         try {
-            const workspaceState = vscode.workspace.getConfiguration('contextforge');
             // Save only essential data to avoid storage bloat
             const sessionsToSave = this._sessions.slice(0, this._config.chatMaxHistory);
-            vscode.workspace.getConfiguration('contextforge').update('chatSessions', sessionsToSave, vscode.ConfigurationTarget.Workspace);
+            vscode.workspace.getConfiguration('contextforge').update('chatSessions', sessionsToSave, vscode.ConfigurationTarget.Global // Use Global (User settings) instead of Workspace
+            ).then(() => { }, (err) => console.error('Failed to save chat history:', err));
         }
         catch (error) {
             console.error('Failed to save chat history:', error);

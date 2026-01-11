@@ -67,7 +67,18 @@ class AgentWorker:
         self.register_handler("vector_search", self._handle_vector_search)
         self.register_handler("llm_generation", self._handle_llm_generation)
         self.register_handler("batch_processing", self._handle_batch_processing)
-    
+
+        # Register specialized agent handlers (per blueprint)
+        self._register_specialized_handlers()
+
+    def _register_specialized_handlers(self):
+        """Register specialized agent handlers from handlers module."""
+        from .handlers import AGENT_HANDLERS
+
+        for task_type, handler in AGENT_HANDLERS.items():
+            self.register_handler(task_type, handler.handle)
+            logger.debug(f"Registered specialized handler: {task_type}")
+
     def register_handler(self, task_type: str, handler: Callable) -> None:
         """Register a handler for a task type."""
         self._task_handlers[task_type] = handler

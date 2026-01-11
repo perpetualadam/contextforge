@@ -449,3 +449,119 @@ Response includes pagination metadata:
   }
 }
 ```
+
+---
+
+## Code Index Module
+
+The `services.index` module provides incremental, metadata-first code indexing.
+
+### Classes
+
+#### CodeFragment
+Represents a single indexed code unit (function, class, module).
+
+```python
+from services.index import CodeFragment
+
+fragment = CodeFragment(
+    type="function",           # function, class, module
+    path="src/utils.py",       # File path relative to repo
+    symbol="calculate_sum",    # Symbol name
+    language="python",         # Programming language
+    hash="abc123",             # Content hash for change detection
+    start_line=10,             # Starting line number
+    end_line=25,               # Ending line number
+    docstring="Add two nums.", # Extracted docstring
+    dependencies=["math"],     # Imported modules
+    provenance="ast"           # How it was extracted
+)
+
+# Serialize to dict
+data = fragment.to_dict()
+```
+
+#### IndexStats
+Statistics about an indexing operation.
+
+```python
+from services.index import IndexStats
+
+stats = IndexStats(
+    total_files=50,
+    total_symbols=200,
+    languages={"python": 40, "javascript": 10},
+    index_time_ms=1500,
+    last_indexed="2026-01-11T12:00:00Z",
+    is_incremental=True,
+    files_changed=5,
+    files_unchanged=45
+)
+```
+
+#### CodeIndex
+Main indexing class with search capabilities.
+
+```python
+from services.index import CodeIndex
+
+# Create index (optionally with persistence)
+index = CodeIndex(storage_path="/path/to/storage")
+
+# Index a repository
+stats = index.index_repository(
+    repo_path="/path/to/repo",
+    extensions=['.py', '.js', '.ts'],  # File types to index
+    incremental=True,                   # Only re-index changes
+    annotate=False                      # Enable LLM annotation
+)
+
+# Search for symbols
+results = index.search("UserService", top_k=10)
+
+# Get file dependencies
+deps = index.get_dependencies("src/api.py")
+
+# Get dependents of a module
+dependents = index.get_dependents("utils")
+
+# Get statistics
+stats = index.get_stats()
+```
+
+### Global Singleton
+
+```python
+from services.index import get_code_index
+
+# Get or create global index instance
+index = get_code_index(storage_path="/path/to/storage")
+```
+
+### Supported Languages
+
+| Extension | Language | Extraction Method |
+|-----------|----------|-------------------|
+| `.py` | Python | AST parsing |
+| `.js` | JavaScript | Regex patterns |
+| `.ts` | TypeScript | Regex patterns |
+| `.java` | Java | Fallback (module) |
+| `.go` | Go | Fallback (module) |
+| `.rs` | Rust | Fallback (module) |
+| `.cpp`, `.c`, `.h` | C/C++ | Fallback (module) |
+| `.rb` | Ruby | Fallback (module) |
+| `.php` | PHP | Fallback (module) |
+| `.swift` | Swift | Fallback (module) |
+| `.kt` | Kotlin | Fallback (module) |
+
+### Backwards Compatibility
+
+For backwards compatibility, all classes are also exported from `services.core`:
+
+```python
+# These imports are equivalent
+from services.index import CodeIndex, CodeFragment, IndexStats
+from services.core import CodeIndex, CodeFragment, IndexStats
+```
+
+New code should use `services.index` directly.

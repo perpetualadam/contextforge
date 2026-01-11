@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from threading import Lock
 
+from services.utils import utc_now
+
 logger = logging.getLogger(__name__)
 
 # Redis connection settings
@@ -167,7 +169,7 @@ class RedisAgentRegistry:
         if not agent:
             return False
 
-        agent.last_heartbeat = datetime.utcnow()
+        agent.last_heartbeat = utc_now()
         agent.status = request.status
         agent.current_tasks = request.current_tasks
         agent.metadata.update(request.metadata)
@@ -358,7 +360,7 @@ class RedisTaskQueue:
         if not task:
             return None
 
-        task.completed_at = datetime.utcnow()
+        task.completed_at = utc_now()
         task.status = TaskStatus.COMPLETED if not error else TaskStatus.FAILED
         task.result = result
         task.error = error
@@ -395,7 +397,7 @@ class RedisTaskQueue:
             return False
 
         task.status = TaskStatus.CANCELLED
-        task.completed_at = datetime.utcnow()
+        task.completed_at = utc_now()
 
         if self._redis:
             self._redis.hset(TASKS_KEY, task_id, self._serialize_task(task))
