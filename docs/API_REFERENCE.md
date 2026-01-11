@@ -263,6 +263,56 @@ Clear all vectors from the index.
 }
 ```
 
+## Code Index Endpoints
+
+The code index provides symbol-based search functionality for source code.
+
+### Code Index Statistics
+
+#### GET /code-index/stats
+Get code index statistics (symbol-based indexing).
+
+**Response:**
+```json
+{
+  "total_files": 150,
+  "total_symbols": 1200,
+  "languages": {"python": 100, "javascript": 50},
+  "index_time_ms": 523,
+  "last_indexed": "2024-01-01T00:00:00Z",
+  "is_incremental": true,
+  "files_changed": 5,
+  "files_unchanged": 145
+}
+```
+
+### Code Index Search
+
+#### POST /code-index/search
+Search the code index for symbols and code fragments.
+
+**Query Parameters:**
+- `query` (string, required): Search query (symbol name, partial match)
+- `top_k` (integer, optional): Maximum results to return (default: 10)
+
+**Response:**
+```json
+{
+  "query": "UserService",
+  "results": [
+    {
+      "symbol": "UserService",
+      "type": "class",
+      "path": "src/services/user.py",
+      "line_start": 15,
+      "line_end": 45,
+      "docstring": "Service for user management."
+    }
+  ],
+  "count": 1
+}
+```
+
 ## System Endpoints
 
 ### Health Check

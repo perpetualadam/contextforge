@@ -619,22 +619,22 @@ async def run_pipeline(
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
 
-@app.get("/index/stats")
-async def get_index_stats():
-    """Get code index statistics."""
+@app.get("/code-index/stats")
+async def get_code_index_stats():
+    """Get code index statistics (symbol-based indexing)."""
     try:
         from services.core import get_code_index
 
         index = get_code_index()
         return index.get_stats()
     except Exception as e:
-        logger.error("Failed to get index stats", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to get index stats: {e}")
+        logger.error("Failed to get code index stats", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get code index stats: {e}")
 
 
-@app.post("/index/search")
-async def search_index(query: str, top_k: int = 10):
-    """Search the code index."""
+@app.post("/code-index/search")
+async def search_code_index(query: str, top_k: int = 10):
+    """Search the code index for symbols and code fragments."""
     try:
         from services.core import get_code_index
 
@@ -642,8 +642,8 @@ async def search_index(query: str, top_k: int = 10):
         results = index.search(query, top_k=top_k)
         return {"query": query, "results": results, "count": len(results)}
     except Exception as e:
-        logger.error("Index search failed", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Index search failed: {e}")
+        logger.error("Code index search failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Code index search failed: {e}")
 
 
 # Query endpoints
