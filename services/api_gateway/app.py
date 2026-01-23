@@ -227,11 +227,35 @@ app.add_middleware(
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
 
+# Initialize Event Bus (Phase 1 integration)
+from services.core.event_bus import get_event_bus, Event, EventType
+event_bus = get_event_bus()
+
 # Register remote agent routes if available
 if REMOTE_AGENTS_ENABLED:
     app.include_router(agent_router)
     app.include_router(task_router)
     app.include_router(ws_router)
+
+
+# Startup event to publish SERVICE_STARTED
+@app.on_event("startup")
+async def startup_event():
+    """Validate configuration and publish service started event."""
+    # Phase 1: Startup validation
+    from services.startup_validator import validate_startup
+    if not validate_startup():
+        logger.error("Startup validation failed - some checks did not pass")
+        # Continue anyway but log warning
+        logger.warning("Continuing with startup despite validation warnings")
+
+    # Publish SERVICE_STARTED event
+    await event_bus.publish(Event(
+        type=EventType.SERVICE_STARTED,
+        payload={"service": "api_gateway"},
+        source="api_gateway"
+    ))
+    logger.info("API Gateway started and event published")
 
 
 # Pydantic models with input validation
@@ -377,9 +401,20 @@ async def ingest_repository(
     # Check rate limit
     await check_rate_limit(http_request)
 
+    # Generate trace ID for event correlation
+    trace_id = str(uuid.uuid4())
+
     try:
-        logger.info("Starting repository ingestion", path=request.path)
-        
+        # Publish INDEX_STARTED event
+        await event_bus.publish(Event(
+            type=EventType.INDEX_STARTED,
+            payload={"path": request.path, "recursive": request.recursive},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+
+        logger.info("Starting repository ingestion", path=request.path, trace_id=trace_id)
+
         # Step 1: Connect to repository
         connector_response = requests.post(
             f"{CONNECTOR_URL}/connect",
@@ -417,23 +452,46 @@ async def ingest_repository(
         index_data = index_response.json()
         
         logger.info("Chunks indexed", indexed_count=index_data.get("indexed_count", 0))
-        
+
+        # Publish INDEX_COMPLETED event
+        stats = {
+            "files_processed": len(files_data.get("files", [])),
+            "chunks_created": len(chunks_data.get("chunks", [])),
+            "chunks_indexed": index_data.get("indexed_count", 0)
+        }
+        await event_bus.publish(Event(
+            type=EventType.INDEX_COMPLETED,
+            payload={"path": request.path, "stats": stats},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+
         return {
             "status": "success",
             "message": "Repository ingested successfully",
-            "stats": {
-                "files_processed": len(files_data.get("files", [])),
-                "chunks_created": len(chunks_data.get("chunks", [])),
-                "chunks_indexed": index_data.get("indexed_count", 0)
-            },
+            "stats": stats,
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except requests.RequestException as e:
-        logger.error("Service request failed during ingestion", error=str(e))
+        # Publish INDEX_FAILED event
+        await event_bus.publish(Event(
+            type=EventType.INDEX_FAILED,
+            payload={"path": request.path, "error": str(e)},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+        logger.error("Service request failed during ingestion", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Service unavailable: {e}")
     except Exception as e:
-        logger.error("Ingestion failed", error=str(e))
+        # Publish INDEX_FAILED event
+        await event_bus.publish(Event(
+            type=EventType.INDEX_FAILED,
+            payload={"path": request.path, "error": str(e)},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+        logger.error("Ingestion failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
 
 
@@ -466,12 +524,28 @@ async def run_orchestration(
     """
     await check_rate_limit(http_request)
 
+    # Generate trace ID for event correlation
+    trace_id = str(uuid.uuid4())
+
     try:
+        # Publish AGENT_STARTED event
+        await event_bus.publish(Event(
+            type=EventType.AGENT_STARTED,
+            payload={
+                "repo_path": request.repo_path,
+                "mode": request.mode,
+                "task": request.task
+            },
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+
         logger.info(
             "Starting orchestration",
             repo_path=request.repo_path,
             mode=request.mode,
-            task=request.task
+            task=request.task,
+            trace_id=trace_id
         )
 
         # Import and run orchestration
@@ -484,17 +558,30 @@ async def run_orchestration(
             output_format=request.output_format
         )
 
+        # Publish AGENT_COMPLETED event
+        await event_bus.publish(Event(
+            type=EventType.AGENT_COMPLETED,
+            payload={
+                "repo_path": request.repo_path,
+                "success": result.get("success"),
+                "duration_ms": result.get("duration_ms")
+            },
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+
         logger.info(
             "Orchestration completed",
             success=result.get("success"),
             duration_ms=result.get("duration_ms"),
-            offline_mode=result.get("offline_mode")
+            offline_mode=result.get("offline_mode"),
+            trace_id=trace_id
         )
 
         return result
 
     except Exception as e:
-        logger.error("Orchestration failed", error=str(e))
+        logger.error("Orchestration failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Orchestration failed: {e}")
 
 
@@ -657,8 +744,19 @@ async def query_context(
     # Check rate limit
     await check_rate_limit(http_request)
 
+    # Generate trace ID for event correlation
+    trace_id = str(uuid.uuid4())
+
     try:
-        logger.info("Processing query", query=request.query[:100], auto_terminal_mode=request.auto_terminal_mode)
+        # Publish QUERY_RECEIVED event
+        await event_bus.publish(Event(
+            type=EventType.QUERY_RECEIVED,
+            payload={"query": request.query[:100], "auto_terminal_mode": request.auto_terminal_mode},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+
+        logger.info("Processing query", query=request.query[:100], auto_terminal_mode=request.auto_terminal_mode, trace_id=trace_id)
 
         response = rag_pipeline.answer_question(
             question=request.query,
@@ -735,12 +833,32 @@ async def query_context(
         logger.info("Query processed successfully",
                    backend=response["meta"].get("backend"),
                    latency=response["meta"].get("total_latency_ms"),
-                   auto_commands=len(auto_terminal_results))
+                   auto_commands=len(auto_terminal_results),
+                   trace_id=trace_id)
+
+        # Publish QUERY_COMPLETED event
+        await event_bus.publish(Event(
+            type=EventType.QUERY_COMPLETED,
+            payload={
+                "query": request.query[:100],
+                "backend": response["meta"].get("backend"),
+                "latency_ms": response["meta"].get("total_latency_ms")
+            },
+            source="api_gateway",
+            trace_id=trace_id
+        ))
 
         return response
 
     except Exception as e:
-        logger.error("Query processing failed", error=str(e))
+        # Publish QUERY_FAILED event
+        await event_bus.publish(Event(
+            type=EventType.QUERY_FAILED,
+            payload={"query": request.query[:100], "error": str(e)},
+            source="api_gateway",
+            trace_id=trace_id
+        ))
+        logger.error("Query processing failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
 
@@ -2087,4 +2205,313 @@ async def generate_docs(request: DocGenerationRequest):
 
     except Exception as e:
         logger.error(f"Documentation generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Task List Management Endpoints ==============
+
+class TaskCreateRequest(BaseModel):
+    """Request to create a new task."""
+    name: str = Field(..., description="Task name")
+    description: str = Field("", description="Task description")
+    parent_task_id: Optional[str] = Field(None, description="Parent task ID for subtasks")
+    after_task_id: Optional[str] = Field(None, description="Insert after this task ID")
+    state: str = Field("NOT_STARTED", description="Initial state: NOT_STARTED, IN_PROGRESS, COMPLETE, CANCELLED")
+
+
+class TaskUpdateRequest(BaseModel):
+    """Request to update a task."""
+    task_id: str = Field(..., description="Task ID to update")
+    name: Optional[str] = Field(None, description="New task name")
+    description: Optional[str] = Field(None, description="New task description")
+    state: Optional[str] = Field(None, description="New state: NOT_STARTED, IN_PROGRESS, COMPLETE, CANCELLED")
+
+
+class AddTasksRequest(BaseModel):
+    """Request to add multiple tasks."""
+    tasks: List[TaskCreateRequest] = Field(..., description="List of tasks to create")
+
+
+class UpdateTasksRequest(BaseModel):
+    """Request to update multiple tasks."""
+    tasks: List[TaskUpdateRequest] = Field(..., description="List of task updates")
+
+
+class ReorganizeTasksRequest(BaseModel):
+    """Request to reorganize task list via markdown."""
+    markdown: str = Field(..., description="Markdown representation of task list")
+    validate_only: bool = Field(False, description="Only validate, don't apply changes")
+
+
+@app.get("/tasklist", tags=["tasks"])
+async def get_tasklist():
+    """
+    Get the current task list.
+
+    Returns the task list as markdown and structured data.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager, TaskState
+
+        manager = get_tasklist_manager()
+        tasks = manager.list_tasks()
+
+        # Calculate stats
+        stats = {
+            "total": len(tasks),
+            "not_started": len([t for t in tasks if t.state == TaskState.NOT_STARTED]),
+            "in_progress": len([t for t in tasks if t.state == TaskState.IN_PROGRESS]),
+            "complete": len([t for t in tasks if t.state == TaskState.COMPLETE]),
+            "cancelled": len([t for t in tasks if t.state == TaskState.CANCELLED])
+        }
+
+        return {
+            "markdown": manager.to_markdown(),
+            "tasks": [t.to_dict() for t in tasks],
+            "stats": stats
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasklist/tasks", tags=["tasks"])
+async def add_tasks(request: AddTasksRequest):
+    """
+    Add one or more tasks to the task list.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager, Task, TaskState
+
+        manager = get_tasklist_manager()
+        created_tasks = []
+
+        for task_req in request.tasks:
+            # Map state string to enum
+            state = TaskState.NOT_STARTED
+            if task_req.state:
+                try:
+                    state = TaskState(task_req.state)
+                except ValueError:
+                    pass
+
+            task = Task(
+                task_id=str(uuid.uuid4()),
+                name=task_req.name,
+                description=task_req.description,
+                state=state,
+                parent_id=task_req.parent_task_id
+            )
+
+            manager.add_task(task)
+            created_tasks.append(task.to_dict())
+
+        # Save to disk
+        manager.save()
+
+        return {
+            "success": True,
+            "message": f"Created {len(created_tasks)} task(s)",
+            "tasks": created_tasks
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to add tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/tasklist/tasks", tags=["tasks"])
+async def update_tasks(request: UpdateTasksRequest):
+    """
+    Update one or more tasks.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager, TaskState
+
+        manager = get_tasklist_manager()
+        updated_tasks = []
+
+        for update in request.tasks:
+            state = None
+            if update.state:
+                try:
+                    state = TaskState(update.state)
+                except ValueError:
+                    pass
+
+            task = manager.update_task(
+                task_id=update.task_id,
+                name=update.name,
+                description=update.description,
+                state=state
+            )
+
+            if task:
+                updated_tasks.append(task.to_dict())
+
+        # Save to disk
+        manager.save()
+
+        return {
+            "success": True,
+            "message": f"Updated {len(updated_tasks)} task(s)",
+            "tasks": updated_tasks
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to update tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasklist/reorganize", tags=["tasks"])
+async def reorganize_tasklist(request: ReorganizeTasksRequest):
+    """
+    Reorganize the task list from markdown structure.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager, ReorganizeRequest
+
+        manager = get_tasklist_manager()
+
+        result = manager.reorganize(ReorganizeRequest(
+            markdown=request.markdown,
+            validate_only=request.validate_only
+        ))
+
+        if result.success and not request.validate_only:
+            manager.save()
+
+        return {
+            "success": result.success,
+            "message": result.message,
+            "tasks_added": result.tasks_added,
+            "tasks_moved": result.tasks_moved,
+            "tasks_removed": result.tasks_removed,
+            "validation_errors": result.validation_errors
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to reorganize task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/tasklist/tasks/{task_id}", tags=["tasks"])
+async def delete_task(task_id: str):
+    """
+    Delete a task and its subtasks.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager
+
+        manager = get_tasklist_manager()
+        removed = manager.remove_task(task_id)
+
+        if removed:
+            manager.save()
+            return {
+                "success": True,
+                "message": f"Task {task_id} deleted"
+            }
+        else:
+            raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasklist/undo", tags=["tasks"])
+async def undo_tasklist():
+    """
+    Undo the last task list change.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager
+
+        manager = get_tasklist_manager()
+        success = manager.undo()
+
+        if success:
+            manager.save()
+            return {"success": True, "message": "Undo successful"}
+        else:
+            return {"success": False, "message": "Nothing to undo"}
+
+    except Exception as e:
+        logger.error(f"Failed to undo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasklist/redo", tags=["tasks"])
+async def redo_tasklist():
+    """
+    Redo the last undone task list change.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager
+
+        manager = get_tasklist_manager()
+        success = manager.redo()
+
+        if success:
+            manager.save()
+            return {"success": True, "message": "Redo successful"}
+        else:
+            return {"success": False, "message": "Nothing to redo"}
+
+    except Exception as e:
+        logger.error(f"Failed to redo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tasklist/templates", tags=["tasks"])
+async def get_task_templates():
+    """
+    Get available task templates.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager
+
+        manager = get_tasklist_manager()
+        templates = manager.list_templates()
+
+        return {
+            "templates": templates,
+            "descriptions": {
+                "feature": "Template for implementing new features",
+                "bug_fix": "Template for fixing bugs",
+                "refactor": "Template for refactoring code",
+                "review": "Template for code reviews",
+                "release": "Template for release process"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasklist/templates/{template_name}", tags=["tasks"])
+async def apply_task_template(template_name: str, title: str = "", parent_id: Optional[str] = None):
+    """
+    Apply a task template.
+    """
+    try:
+        from services.tools.tasklist_manager import get_tasklist_manager
+
+        manager = get_tasklist_manager()
+        tasks = manager.apply_template(template_name, title=title, parent_id=parent_id)
+        manager.save()
+
+        return {
+            "success": True,
+            "message": f"Applied template '{template_name}' with {len(tasks)} tasks",
+            "tasks": [t.to_dict() for t in tasks]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to apply template: {e}")
         raise HTTPException(status_code=500, detail=str(e))

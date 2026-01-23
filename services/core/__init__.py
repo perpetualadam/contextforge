@@ -453,7 +453,7 @@ class CoordinatorAgent(AgentInterface):
     - Scope filtering: agents only see relevant contexts
     """
 
-    def __init__(self, config: Optional[CoordinatorConfig] = None):
+    def __init__(self, config: Optional[CoordinatorConfig] = None, execution_resolver=None):
         super().__init__(
             name="coordinator",
             execution_hint=ExecutionHint.LOCAL
@@ -463,6 +463,7 @@ class CoordinatorAgent(AgentInterface):
         self._invocation_depth: int = 0
         self._invocation_hashes: Set[str] = set()
         self._invocation_history: List[Dict[str, Any]] = []
+        self._execution_resolver = execution_resolver  # Phase 1 integration
 
     def capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(
@@ -579,13 +580,17 @@ class CoordinatorAgent(AgentInterface):
             return context.type in allowed_types
         return False
 
-    def resolve_execution_location(self, agent: AgentInterface) -> bool:
+    def resolve_execution_location(self, agent: AgentInterface, execution_resolver=None) -> bool:
         """
         Decide where to execute an agent based on:
-        - Execution hint
+        - Execution strategy (Phase 1 improvements)
+        - Agent capabilities
         - Current connectivity
         - Required permissions
-        - Context size
+
+        Args:
+            agent: Agent to resolve execution for
+            execution_resolver: Optional ExecutionResolver instance (Phase 1)
 
         Returns:
             True if agent should run locally, False for remote
@@ -596,6 +601,19 @@ class CoordinatorAgent(AgentInterface):
         if caps.requires_filesystem:
             return True
 
+        # Use Phase 1 ExecutionResolver if available
+        if execution_resolver:
+            from services.core.execution_strategy import ExecutionResolver
+            if isinstance(execution_resolver, ExecutionResolver):
+                agent_name = agent.__class__.__name__
+                decision = execution_resolver.get_decision(
+                    agent_name=agent_name,
+                    requires_filesystem=caps.requires_filesystem
+                )
+                # Return True for local, False for remote
+                return not decision.use_remote_agent
+
+        # Fallback to old logic for backward compatibility
         # Prefer local for LOCAL hint
         if agent.execution_hint == ExecutionHint.LOCAL:
             return True
@@ -641,8 +659,8 @@ class CoordinatorAgent(AgentInterface):
         # Check safety limits
         self._check_limits(bundle, agent_name)
 
-        # Resolve execution location
-        is_local = self.resolve_execution_location(agent)
+        # Resolve execution location (use Phase 1 ExecutionResolver if available)
+        is_local = self.resolve_execution_location(agent, self._execution_resolver)
         agent._is_local = is_local
 
         # Filter by scope
@@ -867,6 +885,318 @@ class CritiqueAgent(AgentInterface):
         }
 
         return bundle.add_context(review, self.name)
+
+
+class ReviewAgent(AgentInterface):
+    """
+    Review agent - static analysis + LLM-based code review.
+
+    Combines static analysis tools with LLM review for comprehensive
+    code quality feedback. Prefers local execution for static analysis
+    but can leverage remote LLM for deeper review.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="review",
+            execution_hint=ExecutionHint.HYBRID
+        )
+
+    def capabilities(self) -> AgentCapabilities:
+        return AgentCapabilities(
+            consumes=["code_fragment", "file_path"],
+            produces=["review", "findings", "lint_results"],
+            requires_filesystem=True,  # Needs file access for static analysis
+            requires_network=False  # Can work offline
+        )
+
+    async def invoke(self, bundle: ContextBundle) -> ContextBundle:
+        """Perform code review on files in the bundle."""
+        from pathlib import Path
+
+        file_paths = [
+            c.get("path") for c in bundle.contexts
+            if c.get("type") == "file_path" and c.get("path")
+        ]
+
+        if not file_paths:
+            # Check metadata for file path
+            file_path = bundle.metadata.get("file_path")
+            if file_path:
+                file_paths = [file_path]
+
+        review_results = []
+        for file_path in file_paths[:10]:  # Limit to 10 files
+            result = await self._review_file(file_path)
+            review_results.append(result)
+
+        review = {
+            "type": "review",
+            "files_reviewed": len(review_results),
+            "results": review_results,
+            "provenance": self.name
+        }
+
+        return bundle.add_context(review, self.name)
+
+    async def _review_file(self, file_path: str) -> Dict[str, Any]:
+        """Review a single file."""
+        from pathlib import Path
+
+        result = {"file": file_path, "issues": [], "static_analysis": []}
+
+        try:
+            content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+        # Try static analysis if available
+        try:
+            from services.code_analysis import get_code_analyzer
+            analyzer = get_code_analyzer()
+            analysis_results = await analyzer.analyze_file(file_path)
+            for ar in analysis_results:
+                result["static_analysis"].append({
+                    "analyzer": ar.analyzer,
+                    "issues_count": len(ar.issues),
+                    "summary": ar.summary
+                })
+                for issue in ar.issues:
+                    result["issues"].append({
+                        "rule": issue.rule,
+                        "message": issue.message,
+                        "line": issue.line,
+                        "severity": issue.severity.value,
+                        "analyzer": issue.analyzer
+                    })
+        except Exception as e:
+            logger.debug(f"Static analysis not available: {e}")
+
+        return result
+
+
+class DocAgent(AgentInterface):
+    """
+    Documentation agent - generates docstrings and architecture notes.
+
+    Produces documentation for code files including:
+    - Function/method docstrings
+    - Module-level documentation
+    - Architecture notes
+
+    Runs as HYBRID because it needs:
+    - Filesystem access to read source files (LOCAL requirement)
+    - LLM access for generation (can use local Ollama or cloud LLM)
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="doc",
+            execution_hint=ExecutionHint.HYBRID
+        )
+
+    def capabilities(self) -> AgentCapabilities:
+        return AgentCapabilities(
+            consumes=["code_fragment", "file_path"],
+            produces=["documentation", "docstring"],
+            requires_filesystem=True,  # Needs to read files
+            requires_network=False  # Can work offline with local LLM
+        )
+
+    async def invoke(self, bundle: ContextBundle) -> ContextBundle:
+        """Generate documentation for code in the bundle."""
+        from pathlib import Path
+
+        file_path = bundle.metadata.get("file_path", "")
+        doc_style = bundle.metadata.get("doc_style", "google")
+        doc_type = bundle.metadata.get("doc_type", "docstring")
+
+        content = None
+        for ctx in bundle.contexts:
+            if ctx.get("type") == "code_fragment":
+                content = ctx.get("content", ctx.get("code", ""))
+                break
+
+        if not content and file_path:
+            try:
+                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
+            except Exception as e:
+                logger.warning(f"Could not read {file_path}: {e}")
+
+        result = await self._generate_docs(file_path, content, doc_style, doc_type)
+
+        doc_context = {
+            "type": "documentation",
+            "file": file_path,
+            "doc_style": doc_style,
+            "doc_type": doc_type,
+            "result": result,
+            "provenance": self.name
+        }
+
+        return bundle.add_context(doc_context, self.name)
+
+    async def _generate_docs(
+        self,
+        file_path: str,
+        content: str,
+        doc_style: str,
+        doc_type: str
+    ) -> Dict[str, Any]:
+        """Generate documentation for file content."""
+        result = {
+            "file": file_path,
+            "doc_style": doc_style,
+            "doc_type": doc_type,
+            "generated": False
+        }
+
+        if not content:
+            result["error"] = "No content to document"
+            return result
+
+        # Build prompt for LLM-based documentation
+        try:
+            from services.prompt_enhancer import (
+                PromptBuilder, TaskType, get_context_aggregator
+            )
+
+            aggregator = get_context_aggregator()
+            context = await aggregator.gather_context(
+                content[:500] if content else "", file_path
+            )
+
+            builder = PromptBuilder()
+            result["prompt"] = builder.build_prompt(
+                TaskType.DOCUMENTATION,
+                context,
+                code=content or "",
+                doc_style=doc_style,
+                doc_type=doc_type
+            )
+            result["generated"] = True
+        except Exception as e:
+            logger.debug(f"Prompt building not available: {e}")
+            result["error"] = str(e)
+
+        return result
+
+
+class RefactorAgent(AgentInterface):
+    """
+    Refactoring agent - multi-file reasoning and code changes.
+
+    Analyzes code for refactoring opportunities and suggests
+    or applies changes across multiple files.
+
+    Runs as HYBRID because it needs:
+    - Filesystem access to read/write source files (LOCAL requirement)
+    - LLM access for multi-file reasoning (can use local Ollama or cloud LLM)
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="refactor",
+            execution_hint=ExecutionHint.HYBRID
+        )
+
+    def capabilities(self) -> AgentCapabilities:
+        return AgentCapabilities(
+            consumes=["code_fragment", "file_path", "file_tree"],
+            produces=["refactoring_plan", "code_changes"],
+            requires_filesystem=True,  # Needs to read/write files
+            requires_network=False,  # Can work offline with local LLM
+            mutation_rights=["source_files"]  # Can modify files
+        )
+
+    async def invoke(self, bundle: ContextBundle) -> ContextBundle:
+        """Analyze code for refactoring opportunities."""
+        from pathlib import Path
+
+        files = bundle.metadata.get("files", [])
+        refactor_type = bundle.metadata.get("refactor_type", "general")
+        target = bundle.metadata.get("target", "")
+
+        if not files:
+            # Gather file paths from contexts
+            files = [
+                c.get("path") for c in bundle.contexts
+                if c.get("type") == "file_path" and c.get("path")
+            ]
+
+        result = await self._analyze_refactoring(files, refactor_type, target, bundle.metadata)
+
+        refactor_context = {
+            "type": "refactoring_plan",
+            "refactor_type": refactor_type,
+            "target": target,
+            "files_analyzed": len(files),
+            "result": result,
+            "provenance": self.name
+        }
+
+        return bundle.add_context(refactor_context, self.name)
+
+    async def _analyze_refactoring(
+        self,
+        files: List[str],
+        refactor_type: str,
+        target: str,
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze files for refactoring opportunities."""
+        from pathlib import Path
+
+        result = {
+            "refactor_type": refactor_type,
+            "files_analyzed": len(files),
+            "target": target,
+            "suggestions": [],
+            "generated": False
+        }
+
+        # Gather content from all files
+        all_content = []
+        for file_path in files[:10]:  # Limit to 10 files
+            try:
+                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
+                all_content.append(f"# File: {file_path}\n{content[:2000]}")
+            except Exception as e:
+                logger.warning(f"Could not read {file_path}: {e}")
+
+        if not all_content:
+            result["error"] = "No files to analyze"
+            return result
+
+        combined = "\n\n".join(all_content)
+
+        # Build prompt for LLM-based refactoring analysis
+        try:
+            from services.prompt_enhancer import (
+                PromptBuilder, TaskType, get_context_aggregator
+            )
+
+            aggregator = get_context_aggregator()
+            context = await aggregator.gather_context(
+                target or combined[:500], files[0] if files else ""
+            )
+
+            builder = PromptBuilder()
+            result["prompt"] = builder.build_prompt(
+                TaskType.REFACTORING,
+                context,
+                code=combined,
+                refactor_type=refactor_type,
+                target=target,
+                new_name=metadata.get("new_name", "")
+            )
+            result["generated"] = True
+        except Exception as e:
+            logger.debug(f"Prompt building not available: {e}")
+            result["error"] = str(e)
+
+        return result
 
 
 # =============================================================================
@@ -1448,7 +1778,19 @@ class ProductionOrchestrator:
         self.router = LLMRouter(mode=mode)
         self._agents = {}
 
-        logger.info(f"ProductionOrchestrator initialized: mode={mode}")
+        # Initialize execution resolver with Phase 1 improvements
+        from services.core.execution_strategy import ExecutionStrategy, ExecutionResolver
+
+        # Map mode to execution strategy
+        mode_map = {
+            'auto': ExecutionStrategy.HYBRID_AUTO,
+            'online': ExecutionStrategy.CLOUD_PREFERRED,
+            'offline': ExecutionStrategy.LOCAL_ONLY
+        }
+        strategy = mode_map.get(mode.lower(), ExecutionStrategy.HYBRID_AUTO)
+        self.execution_resolver = ExecutionResolver(strategy)
+
+        logger.info(f"ProductionOrchestrator initialized: mode={mode}, strategy={strategy.value}")
 
     def run(self, repo_path: str, task: str = "full_analysis",
             output_format: str = "markdown", **kwargs) -> OrchestrationResult:
@@ -1949,7 +2291,21 @@ class EnhancedOrchestrator:
             remote_url: URL for remote agent service (optional)
         """
         self.router = LLMRouter(mode=mode)
-        self.coordinator = CoordinatorAgent()
+
+        # Initialize execution resolver with Phase 1 improvements
+        from services.core.execution_strategy import ExecutionStrategy, ExecutionResolver
+
+        # Map mode to execution strategy
+        mode_map = {
+            'auto': ExecutionStrategy.HYBRID_AUTO,
+            'online': ExecutionStrategy.CLOUD_PREFERRED,
+            'offline': ExecutionStrategy.LOCAL_ONLY
+        }
+        strategy = mode_map.get(mode.lower(), ExecutionStrategy.HYBRID_AUTO)
+        self.execution_resolver = ExecutionResolver(strategy)
+
+        # Pass execution_resolver to coordinator
+        self.coordinator = CoordinatorAgent(execution_resolver=self.execution_resolver)
         self.code_index = get_code_index()
         self.transport = AgentTransport(
             TransportConfig(base_url=remote_url or "http://localhost:8001")
@@ -1958,18 +2314,25 @@ class EnhancedOrchestrator:
         # Register built-in agents
         self._setup_agents()
 
-        logger.info(f"EnhancedOrchestrator initialized: mode={mode}")
+        logger.info(f"EnhancedOrchestrator initialized: mode={mode}, strategy={strategy.value}")
 
     def _setup_agents(self):
         """Set up the agent pipeline."""
-        # Local agents
+        # Local agents (require filesystem access)
         self.coordinator.register_agent(IndexingAgent())
-        self.coordinator.register_agent(CritiqueAgent())
+        self.coordinator.register_agent(TestingAgent())
+        self.coordinator.register_agent(DebuggingAgent())
 
-        # Reasoning agent (can be local or remote)
+        # Hybrid agents (can work offline or with cloud LLM)
+        self.coordinator.register_agent(CritiqueAgent())
+        self.coordinator.register_agent(ReviewAgent())
+
+        # Remote-preferred agents (prefer cloud LLM)
         reasoning = ReasoningAgent()
         reasoning._router = self.router
         self.coordinator.register_agent(reasoning)
+        self.coordinator.register_agent(DocAgent())
+        self.coordinator.register_agent(RefactorAgent())
 
     async def run_pipeline(
         self,
@@ -2070,7 +2433,7 @@ class EnhancedOrchestrator:
         """Get status of all registered agents."""
         agents = {}
         for name, agent in self.coordinator._agents.items():
-            is_local = self.coordinator.resolve_execution_location(agent)
+            is_local = self.coordinator.resolve_execution_location(agent, self.execution_resolver)
             agents[name] = {
                 "execution_hint": agent.execution_hint.value,
                 "resolved_location": "local" if is_local else "remote",
