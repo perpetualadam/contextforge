@@ -289,6 +289,7 @@ class TestLanguageTools:
         assert LanguageId.CSS in LANGUAGE_TOOLS_REGISTRY
         assert LanguageId.JULIA in LANGUAGE_TOOLS_REGISTRY
         assert LanguageId.SWIFT in LANGUAGE_TOOLS_REGISTRY
+        assert LanguageId.KOTLIN in LANGUAGE_TOOLS_REGISTRY
 
     def test_python_tools(self):
         """Test Python tools configuration."""
@@ -386,6 +387,37 @@ class TestLanguageTools:
         linter_names = [l.name for l in tools.linters]
         assert "SwiftLint" in linter_names
 
+    def test_kotlin_tools(self):
+        """Test Kotlin tools configuration."""
+        from services.code_analysis.language_tools import (
+            get_tools_by_language, LanguageId
+        )
+
+        tools = get_tools_by_language(LanguageId.KOTLIN)
+
+        assert tools is not None
+        assert tools.language == LanguageId.KOTLIN
+        assert ".kt" in tools.file_extensions
+        assert ".kts" in tools.file_extensions
+
+        # Check test frameworks
+        framework_names = [f.name for f in tools.test_frameworks]
+        assert "JUnit 5" in framework_names
+        assert "Kotest" in framework_names
+        assert "Spek" in framework_names
+        assert "MockK" in framework_names
+
+        # Check debug tools
+        debug_names = [d.name for d in tools.debug_tools]
+        assert "Kotlin Debugger (IntelliJ)" in debug_names
+        assert "JDB" in debug_names
+
+        # Check linters
+        linter_names = [l.name for l in tools.linters]
+        assert "ktlint" in linter_names
+        assert "detekt" in linter_names
+        assert "Diktat" in linter_names
+
     def test_get_tools_by_extension(self):
         """Test getting tools by file extension."""
         from services.code_analysis.language_tools import (
@@ -422,6 +454,15 @@ class TestLanguageTools:
         assert swift_tools is not None
         assert swift_tools.language == LanguageId.SWIFT
 
+        # Kotlin
+        kt_tools = get_tools_by_extension(".kt")
+        assert kt_tools is not None
+        assert kt_tools.language == LanguageId.KOTLIN
+
+        kts_tools = get_tools_by_extension(".kts")
+        assert kts_tools is not None
+        assert kts_tools.language == LanguageId.KOTLIN
+
         # Unknown extension
         unknown_tools = get_tools_by_extension(".xyz")
         assert unknown_tools is None
@@ -432,12 +473,14 @@ class TestLanguageTools:
 
         frameworks = get_all_test_frameworks()
 
-        assert len(frameworks) >= 16  # 16 languages in registry
+        assert len(frameworks) >= 17  # 17 languages in registry
 
         # Check some specific frameworks
         from services.code_analysis.language_tools import LanguageId
         assert LanguageId.PYTHON in frameworks
         assert len(frameworks[LanguageId.PYTHON]) > 0
+        assert LanguageId.KOTLIN in frameworks
+        assert len(frameworks[LanguageId.KOTLIN]) > 0
 
     def test_get_all_debug_tools(self):
         """Test getting all debug tools."""
@@ -445,7 +488,7 @@ class TestLanguageTools:
 
         tools = get_all_debug_tools()
 
-        assert len(tools) >= 16  # 16 languages in registry
+        assert len(tools) >= 17  # 17 languages in registry
 
         from services.code_analysis.language_tools import LanguageId
         assert LanguageId.PYTHON in tools
@@ -457,11 +500,13 @@ class TestLanguageTools:
 
         linters = get_all_linters()
 
-        assert len(linters) >= 16  # 16 languages in registry
+        assert len(linters) >= 17  # 17 languages in registry
 
         from services.code_analysis.language_tools import LanguageId
         assert LanguageId.PYTHON in linters
         assert len(linters[LanguageId.PYTHON]) > 0
+        assert LanguageId.KOTLIN in linters
+        assert len(linters[LanguageId.KOTLIN]) > 0
 
     def test_all_tools_are_open_source(self):
         """Test all tools are marked as open source and free."""

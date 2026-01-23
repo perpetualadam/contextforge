@@ -1021,6 +1021,101 @@ SWIFT_TOOLS = LanguageTools(
 
 
 # ============================================================================
+# Kotlin Tools
+# ============================================================================
+KOTLIN_TOOLS = LanguageTools(
+    language=LanguageId.KOTLIN,
+    file_extensions=[".kt", ".kts"],
+    test_frameworks=[
+        TestFramework(
+            name="JUnit 5",
+            command="./gradlew test",
+            install_command="",  # Add via Gradle/Maven
+            file_pattern="src/test/**/*Test.kt",
+            description="JUnit 5 testing framework for Kotlin",
+            url="https://junit.org/junit5/",
+            config_file="build.gradle.kts"
+        ),
+        TestFramework(
+            name="Kotest",
+            command="./gradlew test",
+            install_command="",  # Add via Gradle
+            file_pattern="src/test/**/*Test.kt",
+            description="Flexible and comprehensive testing framework for Kotlin",
+            url="https://kotest.io/"
+        ),
+        TestFramework(
+            name="Spek",
+            command="./gradlew test",
+            install_command="",  # Add via Gradle
+            file_pattern="src/test/**/*Spec.kt",
+            description="BDD-style specification framework for Kotlin",
+            url="https://www.spekframework.org/"
+        ),
+        TestFramework(
+            name="MockK",
+            command="./gradlew test",
+            install_command="",  # Add via Gradle
+            file_pattern="src/test/**/*.kt",
+            description="Mocking library for Kotlin",
+            url="https://mockk.io/"
+        ),
+    ],
+    debug_tools=[
+        DebugTool(
+            name="Kotlin Debugger (IntelliJ)",
+            command="",  # Integrated in IDE
+            install_command="",  # Part of IntelliJ IDEA
+            description="IntelliJ IDEA's integrated debugger for Kotlin",
+            url="https://www.jetbrains.com/idea/",
+            vscode_extension="fwcd.kotlin"
+        ),
+        DebugTool(
+            name="JDB",
+            command="jdb",
+            install_command="",  # Part of JDK
+            description="Java Debugger - works with Kotlin bytecode",
+            url="https://docs.oracle.com/javase/8/docs/technotes/tools/windows/jdb.html"
+        ),
+        DebugTool(
+            name="Kotlin Debug Adapter",
+            command="kotlin-debug-adapter",
+            install_command="",  # Part of Kotlin extension
+            description="Debug Adapter Protocol implementation for Kotlin",
+            url="https://github.com/fwcd/kotlin-debug-adapter",
+            vscode_extension="fwcd.kotlin"
+        ),
+    ],
+    linters=[
+        Linter(
+            name="ktlint",
+            command="ktlint",
+            install_command="brew install ktlint",
+            description="Anti-bikeshedding Kotlin linter with built-in formatter",
+            url="https://pinterest.github.io/ktlint/",
+            config_file=".editorconfig"
+        ),
+        Linter(
+            name="detekt",
+            command="./gradlew detekt",
+            install_command="",  # Add via Gradle plugin
+            description="Static code analysis for Kotlin",
+            url="https://detekt.dev/",
+            config_file="detekt.yml"
+        ),
+        Linter(
+            name="Diktat",
+            command="./gradlew diktatCheck",
+            install_command="",  # Add via Gradle plugin
+            description="Strict coding standard for Kotlin",
+            url="https://diktat.saveourtool.com/",
+            config_file="diktat-analysis.yml"
+        ),
+    ]
+)
+
+
+# ============================================================================
 # Language Tools Registry
 # ============================================================================
 
@@ -1042,6 +1137,7 @@ LANGUAGE_TOOLS_REGISTRY: Dict[LanguageId, LanguageTools] = {
     LanguageId.CSS: CSS_TOOLS,
     LanguageId.JULIA: JULIA_TOOLS,
     LanguageId.SWIFT: SWIFT_TOOLS,
+    LanguageId.KOTLIN: KOTLIN_TOOLS,
 }
 
 # File extension to language mapping
