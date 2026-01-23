@@ -295,6 +295,7 @@ class LLMRequest(BaseModel):
     model: Optional[str] = Field(None, max_length=100)
     max_tokens: int = Field(512, ge=1, le=4096)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
+    provider: Optional[str] = Field(None, max_length=50, description="Specific LLM provider to use (e.g., 'openai', 'anthropic', 'ollama')")
 
 
 class TerminalRequest(BaseModel):
@@ -327,6 +328,7 @@ class ChatRequest(BaseModel):
     max_tokens: int = 1024
     enable_web_search: bool = False
     enable_context: bool = True
+    provider: Optional[str] = Field(None, max_length=50, description="Specific LLM provider to use (e.g., 'openai', 'anthropic', 'ollama')")
 
 class CommitMessageRequest(BaseModel):
     diff: str
@@ -953,7 +955,7 @@ async def generate_text(
     http_request: Request,
     api_key: Optional[str] = Depends(verify_api_key)
 ):
-    """Generate text using the LLM client."""
+    """Generate text using the LLM client with optional provider selection."""
     # Check rate limit
     await check_rate_limit(http_request)
 
@@ -963,6 +965,7 @@ async def generate_text(
             prompt=request.prompt,
             model=request.model,
             max_tokens=request.max_tokens,
+            provider=request.provider,
             temperature=request.temperature
         )
         return response
@@ -971,9 +974,36 @@ async def generate_text(
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
 
 
+@app.get("/llm/providers")
+async def list_llm_providers():
+    """
+    Get detailed information about all LLM providers.
+
+    Returns provider details including:
+    - Name and description
+    - Type (local/cloud)
+    - Availability status
+    - Supported models
+    - Configuration status
+    """
+    try:
+        llm_client = LLMClient()
+        providers = llm_client.get_provider_details()
+
+        return {
+            "providers": providers,
+            "priority": llm_client.priority,
+            "total_providers": len(providers),
+            "available_providers": len([p for p in providers if p["available"]])
+        }
+    except Exception as e:
+        logger.error("Failed to list LLM providers", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to list providers: {e}")
+
+
 @app.get("/llm/adapters")
 async def list_llm_adapters():
-    """List available LLM adapters."""
+    """List available LLM adapters (legacy endpoint, use /llm/providers instead)."""
     try:
         llm_client = LLMClient()
         return {
@@ -983,6 +1013,37 @@ async def list_llm_adapters():
     except Exception as e:
         logger.error("Failed to list LLM adapters", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to list adapters: {e}")
+
+
+class SetPriorityRequest(BaseModel):
+    """Request to set LLM provider priority."""
+    priority: List[str] = Field(..., description="List of provider IDs in priority order")
+
+
+@app.post("/llm/priority")
+async def set_llm_priority(
+    request: SetPriorityRequest,
+    api_key: Optional[str] = Depends(verify_api_key)
+):
+    """
+    Set the priority order for LLM providers.
+
+    The first provider in the list will be tried first, then fallback to subsequent providers.
+    """
+    try:
+        llm_client = LLMClient()
+        llm_client.set_priority(request.priority)
+
+        return {
+            "success": True,
+            "priority": request.priority,
+            "message": f"LLM priority updated to: {', '.join(request.priority)}"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to set LLM priority", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to set priority: {e}")
 
 
 # Chat endpoints
@@ -1045,6 +1106,7 @@ async def chat_conversation(
             llm_response = llm_client.generate(
                 prompt=prompt,
                 max_tokens=request.max_tokens,
+                provider=request.provider,
                 temperature=0.7
             )
 
