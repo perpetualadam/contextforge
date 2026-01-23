@@ -1554,13 +1554,14 @@ class LLMRouter:
         response = router.query("Explain this code...")
     """
     
-    def __init__(self, mode: str = "auto", offline_manager=None):
+    def __init__(self, mode: str = "auto", offline_manager=None, security_manager=None):
         """
         Initialize LLM Router.
 
         Args:
             mode: Operation mode - "auto", "online", or "offline"
             offline_manager: Optional OfflineManager instance (Phase 5 integration)
+            security_manager: Optional SecurityManager instance (Phase 6 integration)
         """
         self.user_mode = OperationMode(mode.lower())
         self._offline_mode = False
@@ -1568,6 +1569,7 @@ class LLMRouter:
         self._check_interval = 60  # Re-check connectivity every 60 seconds
         self._llm_client = None
         self._offline_manager = offline_manager  # Phase 5: Use OfflineManager if available
+        self._security_manager = security_manager  # Phase 6: Use SecurityManager if available
 
         # Detect initial mode
         self.detect_mode()
@@ -1618,24 +1620,40 @@ class LLMRouter:
         elapsed = (utc_now() - self._last_check).total_seconds()
         return elapsed > self._check_interval
     
-    def query(self, prompt: str, model: Optional[str] = None, 
-              max_tokens: int = 1024, **kwargs) -> LLMResponse:
+    def query(self, prompt: str, model: Optional[str] = None,
+              max_tokens: int = 1024, user_id: Optional[str] = None, **kwargs) -> LLMResponse:
         """
         Query LLM with automatic fallback.
-        
+
         Args:
             prompt: The prompt to send
             model: Optional model override
             max_tokens: Maximum tokens to generate
+            user_id: Optional user identifier for security tracking (Phase 6)
             **kwargs: Additional parameters for LLM
-            
+
         Returns:
             LLMResponse with generated text and metadata
         """
+        # Phase 6: Validate prompt if security manager available
+        if self._security_manager:
+            validation_result = self._security_manager.validate_prompt(prompt, user_id)
+            if not validation_result.allowed:
+                logger.warning("Prompt blocked by security manager", extra={"reason": validation_result.reason})
+                raise ValueError(f"Prompt validation failed: {validation_result.reason}")
+
+            # Use sanitized prompt if available
+            if validation_result.sanitized_prompt:
+                prompt = validation_result.sanitized_prompt
+
+            # Log warnings
+            for warning in validation_result.warnings:
+                logger.warning("Prompt security warning", extra={"warning": warning})
+
         # Re-check connectivity if in auto mode and interval elapsed
         if self.user_mode == OperationMode.AUTO and self._should_recheck():
             self.detect_mode()
-        
+
         try:
             if self._offline_mode:
                 return self._query_local(prompt, model, max_tokens, **kwargs)

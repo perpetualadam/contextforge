@@ -406,6 +406,40 @@ async def offline_status():
     return manager.to_dict()
 
 
+@app.get("/security/status")
+async def security_status():
+    """
+    Get security status and statistics.
+
+    Returns information about:
+    - Command sandbox statistics
+    - Prompt guard statistics
+    - Recent security events
+    - Risk score and recommendations
+    """
+    from services.core.security_manager import get_security_manager
+
+    manager = get_security_manager()
+    return manager.get_security_status()
+
+
+@app.get("/security/report")
+async def security_report():
+    """
+    Get comprehensive security report.
+
+    Returns detailed security analysis including:
+    - Full security status
+    - Risk score (0-100)
+    - Critical and warning events
+    - Security recommendations
+    """
+    from services.core.security_manager import get_security_manager
+
+    manager = get_security_manager()
+    return manager.get_security_report()
+
+
 # Ingestion endpoints
 @app.post("/ingest")
 async def ingest_repository(
