@@ -40,6 +40,8 @@ class AnalyzerType(Enum):
     TYPE_CHECKER = "type_checker"
     SECURITY = "security"
     COMPLEXITY = "complexity"
+    TEST_RUNNER = "test_runner"
+    DEBUGGER = "debugger"
 
 
 @dataclass

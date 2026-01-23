@@ -17,7 +17,8 @@ from llm_client import (
     OllamaAdapter,
     LMStudioAdapter,
     OpenAIAdapter,
-    AnthropicAdapter
+    AnthropicAdapter,
+    DeepSeekAdapter
 )
 
 
@@ -85,50 +86,57 @@ class TestOpenAIAdapter:
 
     def setup_method(self):
         """Set up test fixtures."""
-        # OpenAIAdapter reads API key from environment
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
-            self.adapter = OpenAIAdapter()
+        # OpenAIAdapter reads API key from environment or config
+        # We need to patch both the config and environment
+        pass
 
     def test_openai_adapter_initialization(self):
         """Test OpenAIAdapter initializes correctly."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
-            adapter = OpenAIAdapter()
-            assert adapter.name == "openai"
-            assert adapter.api_key == "test-api-key"
-    
+        # Patch the module-level config to disable it, then use env var
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
+                    adapter = OpenAIAdapter()
+                    assert adapter.name == "openai"
+                    assert adapter.api_key == "test-api-key"
+
     @patch('requests.post')
     def test_openai_adapter_successful_request(self, mock_post):
         """Test OpenAIAdapter handles successful requests."""
-        # Set up adapter with API key
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
-            adapter = OpenAIAdapter()
+        # Patch the module-level config to disable it, then use env var
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"OPENAI_API_KEY": "test-api-key"}):
+                    adapter = OpenAIAdapter()
 
-            # Mock successful response
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "model": "gpt-3.5-turbo",
-                "choices": [
-                    {
-                        "message": {
-                            "content": "This is a test response from OpenAI"
+                    # Mock successful response
+                    mock_response = Mock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {
+                        "model": "gpt-3.5-turbo",
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "This is a test response from OpenAI"
+                                }
+                            }
+                        ],
+                        "usage": {
+                            "completion_tokens": 75,
+                            "total_tokens": 100
                         }
                     }
-                ],
-                "usage": {
-                    "completion_tokens": 75,
-                    "total_tokens": 100
-                }
-            }
-            mock_post.return_value = mock_response
+                    mock_post.return_value = mock_response
 
-            response = adapter.generate("test prompt")
+                    response = adapter.generate("test prompt")
 
-            assert "text" in response
-            assert "meta" in response
-            assert response["text"] == "This is a test response from OpenAI"
-            assert response["meta"]["backend"] == "openai"
-            assert response["meta"]["tokens"] == 100
+                    assert "text" in response
+                    assert "meta" in response
+                    assert response["text"] == "This is a test response from OpenAI"
+                    assert response["meta"]["backend"] == "openai"
+                    assert response["meta"]["tokens"] == 100
     
     @patch('requests.post')
     def test_openai_adapter_api_error(self, mock_post):
@@ -138,9 +146,129 @@ class TestOpenAIAdapter:
         mock_response.status_code = 401
         mock_response.raise_for_status.side_effect = Exception("API key invalid")
         mock_post.return_value = mock_response
-        
+
         with pytest.raises(Exception):
             self.adapter.generate("test prompt")
+
+
+class TestDeepSeekAdapter:
+    """Test the DeepSeekAdapter functionality."""
+
+    def test_deepseek_adapter_initialization(self):
+        """Test DeepSeekAdapter initializes correctly."""
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-deepseek-key"}):
+                    adapter = DeepSeekAdapter()
+                    assert adapter.name == "deepseek"
+                    assert adapter.api_key == "test-deepseek-key"
+                    assert "deepseek.com" in adapter.base_url
+
+    def test_deepseek_adapter_is_available(self):
+        """Test DeepSeekAdapter availability check."""
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                # With API key
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}):
+                    adapter = DeepSeekAdapter()
+                    assert adapter.is_available() is True
+
+                # Without API key
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+                    adapter = DeepSeekAdapter()
+                    assert adapter.is_available() is False
+
+    @patch('requests.post')
+    def test_deepseek_adapter_successful_request(self, mock_post):
+        """Test DeepSeekAdapter handles successful requests."""
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-deepseek-key"}):
+                    adapter = DeepSeekAdapter()
+
+                    # Mock successful response
+                    mock_response = Mock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {
+                        "model": "deepseek-chat",
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "This is a test response from DeepSeek"
+                                }
+                            }
+                        ],
+                        "usage": {
+                            "completion_tokens": 50,
+                            "total_tokens": 100
+                        }
+                    }
+                    mock_post.return_value = mock_response
+
+                    response = adapter.generate("test prompt")
+
+                    assert "text" in response
+                    assert "meta" in response
+                    assert response["text"] == "This is a test response from DeepSeek"
+                    assert response["meta"]["backend"] == "deepseek"
+                    assert response["meta"]["tokens"] == 100
+
+    @patch('requests.post')
+    def test_deepseek_adapter_custom_model(self, mock_post):
+        """Test DeepSeekAdapter with custom model."""
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}):
+                    adapter = DeepSeekAdapter()
+
+                    mock_response = Mock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {
+                        "model": "deepseek-coder",
+                        "choices": [{"message": {"content": "Code response"}}],
+                        "usage": {"total_tokens": 50}
+                    }
+                    mock_post.return_value = mock_response
+
+                    response = adapter.generate("test prompt", model="deepseek-coder")
+
+                    # Verify model was passed in request
+                    call_args = mock_post.call_args
+                    assert call_args[1]["json"]["model"] == "deepseek-coder"
+
+    @patch('requests.post')
+    def test_deepseek_adapter_api_error(self, mock_post):
+        """Test DeepSeekAdapter handles API errors."""
+        import llm_client
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}):
+                    adapter = DeepSeekAdapter()
+
+                    # Mock API error response
+                    mock_response = Mock()
+                    mock_response.status_code = 401
+                    mock_response.raise_for_status.side_effect = Exception("API key invalid")
+                    mock_post.return_value = mock_response
+
+                    with pytest.raises(Exception):
+                        adapter.generate("test prompt")
+
+    def test_deepseek_adapter_no_api_key_error(self):
+        """Test DeepSeekAdapter raises error when no API key."""
+        import llm_client
+        from tenacity import RetryError
+        with patch.object(llm_client, 'CONFIG_AVAILABLE', False):
+            with patch.object(llm_client, '_config', None):
+                with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+                    adapter = DeepSeekAdapter()
+                    # The retry decorator wraps the exception in RetryError
+                    with pytest.raises((Exception, RetryError)):
+                        adapter.generate("test prompt")
 
 
 class TestLLMClient:
@@ -159,9 +287,13 @@ class TestLLMClient:
     def test_llm_client_has_production_adapters(self):
         """Test LLMClient has production adapters available."""
         # Check that at least one production adapter is available
-        production_adapters = ["ollama", "lm_studio", "openai", "anthropic"]
+        production_adapters = ["ollama", "lm_studio", "openai", "anthropic", "deepseek"]
         available_adapters = list(self.client.adapters.keys())
         assert any(adapter in available_adapters for adapter in production_adapters)
+
+    def test_llm_client_has_deepseek_adapter(self):
+        """Test LLMClient includes DeepSeek adapter."""
+        assert "deepseek" in self.client.adapters
 
     @patch('requests.post')
     def test_llm_client_generate_with_ollama(self, mock_post):

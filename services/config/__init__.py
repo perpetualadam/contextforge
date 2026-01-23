@@ -59,6 +59,9 @@ class LLMConfig:
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    deepseek_api_key: str = ""
+    deepseek_api_url: str = "https://api.deepseek.com/v1/chat/completions"
+    deepseek_model: str = "deepseek-chat"
     timeout: int = 60
     max_tokens: int = 512
     temperature: float = 0.7
@@ -204,6 +207,27 @@ class ScalingConfig:
 
 
 @dataclass
+class VCSConfig:
+    """Version Control System (VCS) provider configuration.
+
+    Supports GitHub, GitLab (including self-hosted), and Bitbucket.
+    """
+    # Default provider (auto-detected from remote URL if not set)
+    provider: str = ""  # "github", "gitlab", or "bitbucket"
+
+    # GitHub
+    github_token: str = ""
+
+    # GitLab (supports both gitlab.com and self-hosted)
+    gitlab_token: str = ""
+    gitlab_url: str = "https://gitlab.com"
+
+    # Bitbucket
+    bitbucket_token: str = ""
+    bitbucket_username: str = ""
+
+
+@dataclass
 class ServiceURLs:
     """Service URL configuration."""
     vector_index: str = "http://localhost:8001"
@@ -255,6 +279,9 @@ class ContextForgeConfig:
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            deepseek_api_url=os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions"),
+            deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             timeout=_get_int("LLM_TIMEOUT", 60),
             max_tokens=_get_int("LLM_MAX_TOKENS", 512),
             temperature=_get_float("LLM_TEMPERATURE", 0.7),
@@ -351,6 +378,15 @@ class ContextForgeConfig:
             index_watch_enabled=_get_bool("INDEX_WATCH_ENABLED", False),
             index_refresh_interval=_get_int("INDEX_REFRESH_INTERVAL", 86400),
             git_integration_enabled=_get_bool("GIT_INTEGRATION_ENABLED", True),
+        )
+
+        self.vcs = VCSConfig(
+            provider=os.getenv("VCS_PROVIDER", ""),
+            github_token=os.getenv("GITHUB_TOKEN", ""),
+            gitlab_token=os.getenv("GITLAB_TOKEN", ""),
+            gitlab_url=os.getenv("GITLAB_URL", "https://gitlab.com"),
+            bitbucket_token=os.getenv("BITBUCKET_TOKEN", ""),
+            bitbucket_username=os.getenv("BITBUCKET_USERNAME", ""),
         )
 
         self.services = ServiceURLs(

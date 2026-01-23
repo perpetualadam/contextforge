@@ -177,6 +177,12 @@
           "name": "Agent Status",
           "type": "webview",
           "when": "contextforge.enabled"
+        },
+        {
+          "id": "contextforge.taskView",
+          "name": "ContextForge Tasks",
+          "type": "webview",
+          "when": "contextforge.enabled"
         }
       ]
     },
@@ -283,7 +289,12 @@
         },
         "contextforge.allowedFileTypes": {
           "type": "array",
-          "default": ["image/*", "application/pdf", "text/*", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+          "default": [
+            "image/*",
+            "application/pdf",
+            "text/*",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          ],
           "description": "Allowed MIME types for file attachments"
         },
         "contextforge.gitEnabled": {
@@ -291,10 +302,42 @@
           "default": true,
           "description": "Enable Git integration features"
         },
+        "contextforge.vcsProvider": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "github", "gitlab", "bitbucket"],
+          "enumDescriptions": [
+            "Auto-detect from remote URL",
+            "GitHub",
+            "GitLab (including self-hosted)",
+            "Bitbucket"
+          ],
+          "description": "Version control provider (auto-detected if empty)"
+        },
         "contextforge.githubToken": {
           "type": "string",
           "default": "",
           "description": "GitHub personal access token for API operations"
+        },
+        "contextforge.gitlabToken": {
+          "type": "string",
+          "default": "",
+          "description": "GitLab personal access token for API operations"
+        },
+        "contextforge.gitlabUrl": {
+          "type": "string",
+          "default": "https://gitlab.com",
+          "description": "GitLab instance URL (for self-hosted GitLab)"
+        },
+        "contextforge.bitbucketToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bitbucket app password for API operations"
+        },
+        "contextforge.bitbucketUsername": {
+          "type": "string",
+          "default": "",
+          "description": "Bitbucket username for API authentication"
         },
         "contextforge.autoCommitMessages": {
           "type": "boolean",
@@ -469,12 +512,16 @@
     "package": "vsce package"
   },
   "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "16.x",
     "@types/vscode": "^1.74.0",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
     "@vscode/test-electron": "^2.2.0",
     "eslint": "^8.28.0",
+    "glob": "^13.0.0",
+    "mocha": "^11.7.5",
     "typescript": "^4.9.4",
     "vsce": "^2.15.0"
   },

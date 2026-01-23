@@ -260,34 +260,34 @@ class AnthropicAdapter(BaseAdapter):
 
     def is_available(self) -> bool:
         return bool(self.api_key)
-    
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate(self, prompt: str, model: Optional[str] = None, 
+    def generate(self, prompt: str, model: Optional[str] = None,
                 max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
         if not self.api_key:
             raise LLMError("Anthropic API key not configured")
-        
+
         start_time = time.time()
-        
+
         headers = {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
-        
+
         payload = {
             "model": model or self.default_model,
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}]
         }
-        
+
         try:
-            response = requests.post(self.base_url, json=payload, headers=headers, 
+            response = requests.post(self.base_url, json=payload, headers=headers,
                                    timeout=self.timeout)
             response.raise_for_status()
-            
+
             result = response.json()
-            
+
             return {
                 "text": result["content"][0]["text"],
                 "meta": {
@@ -300,6 +300,65 @@ class AnthropicAdapter(BaseAdapter):
         except Exception as e:
             safe_log_error("Anthropic generation failed", e)
             raise LLMError(f"Anthropic generation failed: {mask_sensitive_data(str(e))}")
+
+
+class DeepSeekAdapter(BaseAdapter):
+    """DeepSeek API adapter - Open source LLM with competitive performance."""
+
+    def __init__(self):
+        super().__init__("deepseek")
+        # Use unified config if available
+        if CONFIG_AVAILABLE and _config:
+            self.api_key = getattr(_config.llm, 'deepseek_api_key', '') or os.getenv("DEEPSEEK_API_KEY", "")
+        else:
+            self.api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        self.base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
+        self.default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate(self, prompt: str, model: Optional[str] = None,
+                max_tokens: int = DEFAULT_MAX_TOKENS, **kwargs) -> Dict[str, Any]:
+        if not self.api_key:
+            raise LLMError("DeepSeek API key not configured")
+
+        start_time = time.time()
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": model or self.default_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": kwargs.get("temperature", DEFAULT_TEMPERATURE),
+            "stream": False
+        }
+
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers,
+                                   timeout=self.timeout)
+            response.raise_for_status()
+
+            result = response.json()
+            choice = result["choices"][0]
+
+            return {
+                "text": choice["message"]["content"],
+                "meta": {
+                    "backend": self.name,
+                    "model": result.get("model", model or self.default_model),
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "tokens": result.get("usage", {}).get("total_tokens", 0)
+                }
+            }
+        except Exception as e:
+            safe_log_error("DeepSeek generation failed", e)
+            raise LLMError(f"DeepSeek generation failed: {mask_sensitive_data(str(e))}")
 
 
 class LLMClient:
@@ -320,7 +379,8 @@ class LLMClient:
             "ollama": OllamaAdapter,
             "lm_studio": LMStudioAdapter,
             "openai": OpenAIAdapter,
-            "anthropic": AnthropicAdapter
+            "anthropic": AnthropicAdapter,
+            "deepseek": DeepSeekAdapter
         }
         
         for name, adapter_class in adapter_classes.items():

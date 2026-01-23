@@ -5,6 +5,7 @@ import { ContextForgeChatProvider } from './chatPanel';
 import { ContextForgePromptProvider } from './promptPanel';
 import { GitIntegration } from './gitIntegration';
 import { AgentStatusProvider } from './agentPanel';
+import { TaskPanelProvider } from './tools/taskPanel';
 
 interface ContextForgeConfig {
     apiUrl: string;
@@ -537,7 +538,12 @@ export function activate(context: vscode.ExtensionContext) {
             maxFileSize: config.get('maxFileSize', 10 * 1024 * 1024),
             allowedFileTypes: config.get('allowedFileTypes', ['image/*', 'application/pdf', 'text/*']),
             gitEnabled: config.get('gitEnabled', true),
+            vcsProvider: config.get('vcsProvider', ''),
             githubToken: config.get('githubToken', ''),
+            gitlabToken: config.get('gitlabToken', ''),
+            gitlabUrl: config.get('gitlabUrl', 'https://gitlab.com'),
+            bitbucketToken: config.get('bitbucketToken', ''),
+            bitbucketUsername: config.get('bitbucketUsername', ''),
             autoCommitMessages: config.get('autoCommitMessages', true),
             defaultBranch: config.get('defaultBranch', 'main')
         };
@@ -580,6 +586,12 @@ export function activate(context: vscode.ExtensionContext) {
     const agentProvider = new AgentStatusProvider(context.extensionUri, config);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(AgentStatusProvider.viewType, agentProvider)
+    );
+
+    // Create task panel provider
+    const taskPanelProvider = new TaskPanelProvider(context.extensionUri, { apiUrl: config.apiUrl });
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(TaskPanelProvider.viewType, taskPanelProvider)
     );
 
     // Create status bar item for auto-terminal mode
@@ -840,6 +852,7 @@ export function activate(context: vscode.ExtensionContext) {
             const newConfig = getConfig();
             chatProvider.updateConfig(newConfig);
             agentProvider.updateConfig(newConfig);
+            taskPanelProvider.updateConfig({ apiUrl: newConfig.apiUrl });
 
             // Update Git integration config
             if (gitIntegration && newConfig.gitEnabled) {
@@ -878,7 +891,9 @@ export function activate(context: vscode.ExtensionContext) {
                 'View all branches'
             ], { placeHolder: 'Select branch action' });
 
-            if (!action) return;
+            if (!action) {
+                return;
+            }
 
             const branches = await gitIntegration.getBranches();
             const currentBranch = branches.current;
@@ -960,7 +975,9 @@ export function activate(context: vscode.ExtensionContext) {
                 placeHolder: 'feat: add new feature'
             });
 
-            if (!title) return;
+            if (!title) {
+                return;
+            }
 
             const body = await vscode.window.showInputBox({
                 prompt: 'Enter PR description (optional)',
@@ -973,7 +990,9 @@ export function activate(context: vscode.ExtensionContext) {
                 placeHolder: 'main'
             });
 
-            if (!baseBranch) return;
+            if (!baseBranch) {
+                return;
+            }
 
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,

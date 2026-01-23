@@ -135,9 +135,96 @@ class TestContextForgeConfig:
     def test_privacy_config(self):
         """Test privacy configuration."""
         from services.config import get_config
-        
+
         config = get_config()
-        
+
         assert config.privacy.privacy_mode == True
         assert config.privacy.log_level == "INFO"
+
+    def test_vcs_config_default(self):
+        """Test VCS configuration default values."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        # VCS defaults - all empty by default
+        assert config.vcs.provider == ""
+        assert config.vcs.github_token == ""
+        assert config.vcs.gitlab_token == ""
+        assert config.vcs.gitlab_url == "https://gitlab.com"
+        assert config.vcs.bitbucket_token == ""
+        assert config.vcs.bitbucket_username == ""
+
+    @patch.dict(os.environ, {
+        "VCS_PROVIDER": "github",
+        "GITHUB_TOKEN": "ghp_test_token_123"
+    })
+    def test_vcs_config_github(self):
+        """Test VCS configuration for GitHub."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        assert config.vcs.provider == "github"
+        assert config.vcs.github_token == "ghp_test_token_123"
+
+    @patch.dict(os.environ, {
+        "VCS_PROVIDER": "gitlab",
+        "GITLAB_TOKEN": "glpat_test_token_456",
+        "GITLAB_URL": "https://gitlab.mycompany.com"
+    })
+    def test_vcs_config_gitlab(self):
+        """Test VCS configuration for GitLab (including self-hosted)."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        assert config.vcs.provider == "gitlab"
+        assert config.vcs.gitlab_token == "glpat_test_token_456"
+        assert config.vcs.gitlab_url == "https://gitlab.mycompany.com"
+
+    @patch.dict(os.environ, {
+        "VCS_PROVIDER": "bitbucket",
+        "BITBUCKET_TOKEN": "bb_app_password_789",
+        "BITBUCKET_USERNAME": "testuser"
+    })
+    def test_vcs_config_bitbucket(self):
+        """Test VCS configuration for Bitbucket."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        assert config.vcs.provider == "bitbucket"
+        assert config.vcs.bitbucket_token == "bb_app_password_789"
+        assert config.vcs.bitbucket_username == "testuser"
+
+    def test_deepseek_config_default(self):
+        """Test DeepSeek LLM configuration default values."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        # DeepSeek defaults
+        assert config.llm.deepseek_api_key == ""
+        assert "deepseek.com" in config.llm.deepseek_api_url
+        assert config.llm.deepseek_model == "deepseek-chat"
+
+    @patch.dict(os.environ, {
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-key",
+        "DEEPSEEK_MODEL": "deepseek-coder"
+    })
+    def test_deepseek_config_from_env(self):
+        """Test DeepSeek configuration loads from environment."""
+        from services.config import get_config, ContextForgeConfig
+        ContextForgeConfig.reset()
+
+        config = get_config()
+
+        assert config.llm.deepseek_api_key == "sk-test-deepseek-key"
+        assert config.llm.deepseek_model == "deepseek-coder"
 
