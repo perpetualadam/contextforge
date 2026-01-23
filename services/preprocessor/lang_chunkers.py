@@ -12,6 +12,9 @@ Supported languages:
 - Go (.go) - Regex-based with package, func, struct, interface support
 - Swift (.swift) - Regex-based with class, struct, enum, protocol, extension support
 - Kotlin (.kt, .kts) - Regex-based with class, interface, object, fun support
+- HTML (.html, .htm) - Regex-based with section, script, style, form, component support
+- CSS (.css, .scss, .sass, .less) - Regex-based with rules, media queries, keyframes support
+- Julia (.jl) - Regex-based with function, module, struct, macro, type support
 """
 
 import ast
@@ -1600,6 +1603,603 @@ class KotlinChunker(BaseChunker):
         return chunks
 
 
+class HTMLChunker(BaseChunker):
+    """Regex-based chunker for HTML files."""
+
+    def __init__(self, max_chunk_size: int = 1000, overlap: int = 100):
+        super().__init__(max_chunk_size, overlap)
+
+        # Regex patterns for HTML constructs
+        self.section_pattern = re.compile(
+            r'<(section|article|div|header|footer|nav|main|aside)([^>]*)>(.*?)</\1>',
+            re.MULTILINE | re.DOTALL
+        )
+        self.script_pattern = re.compile(
+            r'<script([^>]*)>(.*?)</script>',
+            re.MULTILINE | re.DOTALL
+        )
+        self.style_pattern = re.compile(
+            r'<style([^>]*)>(.*?)</style>',
+            re.MULTILINE | re.DOTALL
+        )
+        self.component_pattern = re.compile(
+            r'<([A-Z][\w-]*)([^>]*)(?:>(.*?)</\1>|/>)',
+            re.MULTILINE | re.DOTALL
+        )
+        self.form_pattern = re.compile(
+            r'<form([^>]*)>(.*?)</form>',
+            re.MULTILINE | re.DOTALL
+        )
+
+    def get_language(self) -> str:
+        return "html"
+
+    def chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Chunk HTML code using regex patterns."""
+        chunks = []
+
+        # Extract script blocks
+        for match in self.script_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            attrs = match.group(1).strip()
+            script_content = match.group(2).strip()
+
+            metadata = {
+                "tag": "script",
+                "attributes": attrs,
+                "has_content": len(script_content) > 0
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="script",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract style blocks
+        for match in self.style_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            attrs = match.group(1).strip()
+            style_content = match.group(2).strip()
+
+            metadata = {
+                "tag": "style",
+                "attributes": attrs,
+                "has_content": len(style_content) > 0
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="style",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract semantic sections
+        for match in self.section_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            tag_name = match.group(1)
+            attrs = match.group(2).strip()
+
+            # Extract id and class from attributes
+            id_match = re.search(r'id=["\']([^"\']+)["\']', attrs)
+            class_match = re.search(r'class=["\']([^"\']+)["\']', attrs)
+
+            metadata = {
+                "tag": tag_name,
+                "id": id_match.group(1) if id_match else None,
+                "classes": class_match.group(1).split() if class_match else [],
+                "attributes": attrs
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="section",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract forms
+        for match in self.form_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            attrs = match.group(1).strip()
+            action_match = re.search(r'action=["\']([^"\']+)["\']', attrs)
+            method_match = re.search(r'method=["\']([^"\']+)["\']', attrs)
+
+            metadata = {
+                "tag": "form",
+                "action": action_match.group(1) if action_match else None,
+                "method": method_match.group(1) if method_match else "get",
+                "attributes": attrs
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="form",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract React/Vue-style components (capitalized tags)
+        for match in self.component_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            component_name = match.group(1)
+            attrs = match.group(2).strip()
+
+            metadata = {
+                "component_name": component_name,
+                "attributes": attrs,
+                "is_self_closing": match.group(0).endswith('/>')
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="component",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        if not chunks:
+            return self._fallback_chunk(content, file_path)
+
+        return chunks
+
+    def _fallback_chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Fallback to simple text chunking."""
+        chunks = []
+        lines = content.split('\n')
+
+        for i in range(0, len(lines), self.max_chunk_size // 50):
+            chunk_lines = lines[i:i + self.max_chunk_size // 50]
+            if chunk_lines:
+                chunk_text = '\n'.join(chunk_lines)
+                chunk = self.create_chunk(
+                    text=chunk_text,
+                    file_path=file_path,
+                    start_line=i + 1,
+                    end_line=min(i + len(chunk_lines), len(lines)),
+                    chunk_type="text_block"
+                )
+                chunks.append(chunk)
+
+        return chunks
+
+
+class CSSChunker(BaseChunker):
+    """Regex-based chunker for CSS files."""
+
+    def __init__(self, max_chunk_size: int = 1000, overlap: int = 100):
+        super().__init__(max_chunk_size, overlap)
+
+        # Regex patterns for CSS constructs
+        self.rule_pattern = re.compile(
+            r'([^{}/]+)\s*{([^}]*)}',
+            re.MULTILINE
+        )
+        self.media_query_pattern = re.compile(
+            r'@media\s+([^{]+)\s*{(.*?)}(?=\s*(?:@|$|[^}]))',
+            re.MULTILINE | re.DOTALL
+        )
+        self.keyframes_pattern = re.compile(
+            r'@(?:-webkit-|-moz-|-o-)?keyframes\s+([^{]+)\s*{(.*?)}(?=\s*(?:@|$|[^}]))',
+            re.MULTILINE | re.DOTALL
+        )
+        self.import_pattern = re.compile(
+            r'@import\s+(?:url\(["\']?([^"\'()]+)["\']?\)|["\']([^"\']+)["\'])(?:\s+[^;]+)?;',
+            re.MULTILINE
+        )
+        self.font_face_pattern = re.compile(
+            r'@font-face\s*{([^}]*)}',
+            re.MULTILINE
+        )
+
+    def get_language(self) -> str:
+        return "css"
+
+    def chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Chunk CSS code using regex patterns."""
+        chunks = []
+
+        # Extract @import statements
+        for match in self.import_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            # Get import path from either group 1 (url()) or group 2 (quoted)
+            import_path = match.group(1) if match.group(1) else match.group(2)
+
+            metadata = {
+                "import_path": import_path
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="import",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract @font-face rules
+        for match in self.font_face_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            properties = match.group(1).strip()
+            font_family_match = re.search(r'font-family:\s*["\']?([^"\';\n]+)["\']?', properties)
+
+            metadata = {
+                "font_family": font_family_match.group(1).strip() if font_family_match else None
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="font_face",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract @keyframes
+        for match in self.keyframes_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            animation_name = match.group(1).strip()
+
+            metadata = {
+                "animation_name": animation_name
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="keyframes",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract @media queries
+        for match in self.media_query_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            media_condition = match.group(1).strip()
+
+            metadata = {
+                "media_condition": media_condition
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="media_query",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        # Extract regular CSS rules (outside of media queries and keyframes)
+        # This is more complex - we need to avoid duplicating content already extracted
+        extracted_ranges = set()
+        for chunk in chunks:
+            for line in range(chunk['meta']['start_line'], chunk['meta']['end_line'] + 1):
+                extracted_ranges.add(line)
+
+        for match in self.rule_pattern.finditer(content):
+            start_pos = match.start()
+            end_pos = match.end()
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            # Skip if already extracted
+            if start_line in extracted_ranges:
+                continue
+
+            selector = match.group(1).strip()
+            properties = match.group(2).strip()
+
+            # Skip if this looks like it's inside a media query or keyframe
+            if '@' in selector or '{' in selector:
+                continue
+
+            metadata = {
+                "selector": selector,
+                "property_count": len([p for p in properties.split(';') if p.strip()])
+            }
+
+            chunk = self.create_chunk(
+                text=match.group(0),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="rule",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        if not chunks:
+            return self._fallback_chunk(content, file_path)
+
+        return chunks
+
+    def _fallback_chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Fallback to simple text chunking."""
+        chunks = []
+        lines = content.split('\n')
+
+        for i in range(0, len(lines), self.max_chunk_size // 50):
+            chunk_lines = lines[i:i + self.max_chunk_size // 50]
+            if chunk_lines:
+                chunk_text = '\n'.join(chunk_lines)
+                chunk = self.create_chunk(
+                    text=chunk_text,
+                    file_path=file_path,
+                    start_line=i + 1,
+                    end_line=min(i + len(chunk_lines), len(lines)),
+                    chunk_type="text_block"
+                )
+                chunks.append(chunk)
+
+        return chunks
+
+
+class JuliaChunker(BaseChunker):
+    """Regex-based chunker for Julia files."""
+
+    def __init__(self, max_chunk_size: int = 1000, overlap: int = 100):
+        super().__init__(max_chunk_size, overlap)
+
+        # Regex patterns for Julia constructs
+        self.function_pattern = re.compile(
+            r'function\s+(\w+(?:{[^}]+})?)\s*\([^)]*\)(?:\s*::\s*[\w{}<>,.]+)?\s*\n',
+            re.MULTILINE
+        )
+        self.short_function_pattern = re.compile(
+            r'(\w+)\s*\([^)]*\)\s*=\s*',
+            re.MULTILINE
+        )
+        self.module_pattern = re.compile(
+            r'module\s+(\w+)\s*\n',
+            re.MULTILINE
+        )
+        self.struct_pattern = re.compile(
+            r'(?:mutable\s+)?struct\s+(\w+(?:{[^}]+})?)\s*(?:<:\s*[\w{}<>,.]+)?\s*\n',
+            re.MULTILINE
+        )
+        self.macro_pattern = re.compile(
+            r'macro\s+(\w+)\s*\([^)]*\)\s*\n',
+            re.MULTILINE
+        )
+        self.type_pattern = re.compile(
+            r'(?:abstract\s+type|primitive\s+type)\s+(\w+(?:{[^}]+})?)\s*(?:<:\s*[\w{}<>,.]+)?\s*(?:end|\n)',
+            re.MULTILINE
+        )
+        self.using_pattern = re.compile(
+            r'^using\s+[\w.,:\s]+',
+            re.MULTILINE
+        )
+        self.import_pattern = re.compile(
+            r'^import\s+[\w.,:\s]+',
+            re.MULTILINE
+        )
+        # Julia doc comment pattern
+        self.doc_comment_pattern = re.compile(r'"""\s*(.*?)\s*"""', re.DOTALL)
+
+    def get_language(self) -> str:
+        return "julia"
+
+    def chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Chunk Julia code using regex patterns."""
+        chunks = []
+
+        # Extract using/import statements
+        for pattern in [self.using_pattern, self.import_pattern]:
+            for match in pattern.finditer(content):
+                start_pos = match.start()
+                end_pos = match.end()
+                start_line = content[:start_pos].count('\n') + 1
+                end_line = content[:end_pos].count('\n') + 1
+
+                chunk = self.create_chunk(
+                    text=match.group(0),
+                    file_path=file_path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    chunk_type="import"
+                )
+                chunks.append(chunk)
+
+        # Extract modules, functions, structs, macros, types
+        for pattern, chunk_type in [
+            (self.module_pattern, "module"),
+            (self.function_pattern, "function"),
+            (self.struct_pattern, "struct"),
+            (self.macro_pattern, "macro"),
+            (self.type_pattern, "type"),
+        ]:
+            for match in pattern.finditer(content):
+                block_chunk = self._extract_block(match, content, file_path, chunk_type)
+                if block_chunk:
+                    chunks.append(block_chunk)
+
+        # Extract short-form functions (single-line definitions)
+        for match in self.short_function_pattern.finditer(content):
+            start_pos = match.start()
+            # Find end of line
+            end_pos = content.find('\n', start_pos)
+            if end_pos == -1:
+                end_pos = len(content)
+
+            start_line = content[:start_pos].count('\n') + 1
+            end_line = content[:end_pos].count('\n') + 1
+
+            function_text = content[start_pos:end_pos].strip()
+
+            # Skip if this looks like it's part of a larger expression
+            if start_pos > 0 and content[start_pos-1] not in ('\n', ' ', '\t'):
+                continue
+
+            metadata = {
+                "name": match.group(1),
+                "block_type": "short_function"
+            }
+
+            chunk = self.create_chunk(
+                text=function_text,
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                chunk_type="function",
+                metadata=metadata
+            )
+            chunks.append(chunk)
+
+        if not chunks:
+            return self._fallback_chunk(content, file_path)
+
+        return chunks
+
+    def _extract_block(self, match: re.Match, content: str, file_path: str,
+                      chunk_type: str) -> Optional[Dict[str, Any]]:
+        """Extract a code block starting from a regex match."""
+        start_pos = match.start()
+
+        # Look for doc comments before the block
+        doc_comment = None
+        preceding_content = content[:start_pos]
+        doc_match = re.search(r'"""\s*(.*?)\s*"""\s*$', preceding_content, re.DOTALL)
+        if doc_match:
+            doc_comment = doc_match.group(1).strip()
+
+        start_line = content[:start_pos].count('\n') + 1
+
+        # Find matching 'end' keyword
+        # Julia uses 'end' to close blocks
+        pos = match.end()
+        depth = 1
+
+        # Keywords that increase depth
+        block_keywords = r'\b(function|module|struct|macro|if|for|while|begin|let|do|try|quote)\b'
+        end_keyword = r'\bend\b'
+
+        while pos < len(content) and depth > 0:
+            # Find next block keyword or end
+            block_match = re.search(block_keywords, content[pos:pos+100])
+            end_match = re.search(end_keyword, content[pos:pos+100])
+
+            if end_match and (not block_match or end_match.start() < block_match.start()):
+                depth -= 1
+                pos += end_match.end()
+                if depth == 0:
+                    break
+            elif block_match:
+                depth += 1
+                pos += block_match.end()
+            else:
+                # No matches in next 100 chars, move forward
+                pos += 100
+
+        if depth != 0:
+            # Couldn't find matching end, try to find it more simply
+            end_match = re.search(r'\nend\b', content[match.end():])
+            if end_match:
+                pos = match.end() + end_match.end()
+            else:
+                return None
+
+        end_pos = pos
+        end_line = content[:end_pos].count('\n') + 1
+
+        block_text = content[start_pos:end_pos]
+
+        metadata = {
+            "name": match.group(1) if match.groups() else "anonymous",
+            "block_type": chunk_type,
+            "doc_comment": doc_comment
+        }
+
+        return self.create_chunk(
+            text=block_text,
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            chunk_type=chunk_type,
+            metadata=metadata
+        )
+
+    def _fallback_chunk(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Fallback to simple text chunking."""
+        chunks = []
+        lines = content.split('\n')
+
+        for i in range(0, len(lines), self.max_chunk_size // 50):
+            chunk_lines = lines[i:i + self.max_chunk_size // 50]
+            if chunk_lines:
+                chunk_text = '\n'.join(chunk_lines)
+                chunk = self.create_chunk(
+                    text=chunk_text,
+                    file_path=file_path,
+                    start_line=i + 1,
+                    end_line=min(i + len(chunk_lines), len(lines)),
+                    chunk_type="text_block"
+                )
+                chunks.append(chunk)
+
+        return chunks
+
+
 class MarkdownChunker(BaseChunker):
     """Chunker for Markdown files based on headings and paragraphs."""
 
@@ -1711,6 +2311,16 @@ class ChunkerFactory:
         # Kotlin
         '.kt': KotlinChunker,
         '.kts': KotlinChunker,
+        # HTML
+        '.html': HTMLChunker,
+        '.htm': HTMLChunker,
+        # CSS
+        '.css': CSSChunker,
+        '.scss': CSSChunker,
+        '.sass': CSSChunker,
+        '.less': CSSChunker,
+        # Julia
+        '.jl': JuliaChunker,
     }
     
     @classmethod
