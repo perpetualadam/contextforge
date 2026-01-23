@@ -389,6 +389,23 @@ async def health_check():
     return rag_pipeline.health_check()
 
 
+@app.get("/offline/status")
+async def offline_status():
+    """
+    Get offline mode status and capabilities.
+
+    Returns information about:
+    - Internet connectivity
+    - Cloud LLM availability
+    - Local LLM backends (Ollama, LM Studio)
+    - Recommended actions
+    """
+    from services.core.offline_manager import get_offline_manager
+
+    manager = get_offline_manager()
+    return manager.to_dict()
+
+
 # Ingestion endpoints
 @app.post("/ingest")
 async def ingest_repository(

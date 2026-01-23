@@ -1554,22 +1554,24 @@ class LLMRouter:
         response = router.query("Explain this code...")
     """
     
-    def __init__(self, mode: str = "auto"):
+    def __init__(self, mode: str = "auto", offline_manager=None):
         """
         Initialize LLM Router.
-        
+
         Args:
             mode: Operation mode - "auto", "online", or "offline"
+            offline_manager: Optional OfflineManager instance (Phase 5 integration)
         """
         self.user_mode = OperationMode(mode.lower())
         self._offline_mode = False
         self._last_check = None
         self._check_interval = 60  # Re-check connectivity every 60 seconds
         self._llm_client = None
-        
+        self._offline_manager = offline_manager  # Phase 5: Use OfflineManager if available
+
         # Detect initial mode
         self.detect_mode()
-        
+
         logger.info(f"LLMRouter initialized: mode={self.user_mode.value}, offline={self._offline_mode}")
     
     @property
@@ -1588,7 +1590,7 @@ class LLMRouter:
     def detect_mode(self) -> bool:
         """
         Detect and set the current operation mode.
-        
+
         Returns:
             True if offline, False if online
         """
@@ -1597,9 +1599,15 @@ class LLMRouter:
         elif self.user_mode == OperationMode.ONLINE:
             self._offline_mode = False
         else:
-            # Auto-detect based on internet connectivity
-            self._offline_mode = not check_internet()
-        
+            # Phase 5: Use OfflineManager if available for more accurate detection
+            if self._offline_manager:
+                status = self._offline_manager.get_status()
+                # Offline if no internet OR no cloud LLM available
+                self._offline_mode = not status.internet_available or not status.cloud_llm_available
+            else:
+                # Fallback to simple internet check
+                self._offline_mode = not check_internet()
+
         self._last_check = utc_now()
         return self._offline_mode
     
