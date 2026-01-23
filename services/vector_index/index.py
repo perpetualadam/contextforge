@@ -15,6 +15,7 @@ import re
 import json
 import pickle
 import logging
+import time
 from typing import Dict, List, Optional, Any, Tuple, Set
 from datetime import datetime
 from collections import Counter
@@ -202,13 +203,37 @@ class EmbeddingGenerator:
 
 
 class FAISSIndex:
-    """FAISS-based vector index implementation."""
-    
-    def __init__(self, dimension: int):
+    """FAISS-based vector index implementation with HNSW support."""
+
+    def __init__(self, dimension: int, index_type: str = "HNSW", hnsw_neighbors: int = 32, nprobe: int = 10):
+        """
+        Initialize FAISS index.
+
+        Args:
+            dimension: Embedding dimension
+            index_type: Index type - "HNSW" for approximate search or "Flat" for exact search
+            hnsw_neighbors: Number of neighbors for HNSW graph (M parameter)
+            nprobe: Number of cells to visit during search (for IVF indexes)
+        """
         self.dimension = dimension
-        self.index = faiss.IndexFlatIP(dimension)  # Inner product (cosine similarity)
+        self.index_type = index_type
+        self.hnsw_neighbors = hnsw_neighbors
+        self.nprobe = nprobe
         self.metadata = []
         self.id_counter = 0
+
+        # Create index based on type
+        if index_type == "HNSW":
+            # HNSW index for approximate nearest neighbor search
+            # Better performance on large datasets (100k+ vectors)
+            self.index = faiss.IndexHNSWFlat(dimension, hnsw_neighbors)
+            self.index.hnsw.efConstruction = 40  # Quality of index construction
+            self.index.hnsw.efSearch = nprobe  # Quality of search
+            logger.info(f"Created HNSW index: M={hnsw_neighbors}, efSearch={nprobe}")
+        else:
+            # Flat index for exact search (default fallback)
+            self.index = faiss.IndexFlatIP(dimension)
+            logger.info("Created Flat index for exact search")
     
     def add(self, embeddings: np.ndarray, metadata: List[Dict[str, Any]]) -> List[int]:
         """Add embeddings and metadata to the index."""
@@ -265,9 +290,12 @@ class FAISSIndex:
                 json.dump({
                     "metadata": self.metadata,
                     "id_counter": self.id_counter,
-                    "dimension": self.dimension
+                    "dimension": self.dimension,
+                    "index_type": self.index_type,
+                    "hnsw_neighbors": self.hnsw_neighbors,
+                    "nprobe": self.nprobe
                 }, f, indent=2)
-            logger.info(f"Index saved to {index_path}")
+            logger.info(f"Index saved to {index_path} (type: {self.index_type})")
         except Exception as e:
             logger.error(f"Failed to save index: {e}")
             raise
@@ -290,7 +318,13 @@ class FAISSIndex:
                 self.metadata = data["metadata"]
                 self.id_counter = data["id_counter"]
                 self.dimension = data["dimension"]
-                logger.info(f"Index loaded from {index_path}")
+
+                # Restore index configuration
+                self.index_type = data.get("index_type", "Flat")
+                self.hnsw_neighbors = data.get("hnsw_neighbors", 32)
+                self.nprobe = data.get("nprobe", 10)
+
+                logger.info(f"Index loaded from {index_path} (type: {self.index_type})")
                 return True
         except Exception as e:
             logger.error(f"Failed to load index: {e}")
@@ -298,18 +332,31 @@ class FAISSIndex:
     
     def clear(self):
         """Clear the index and metadata."""
-        self.index = faiss.IndexFlatIP(self.dimension)
+        # Recreate index with same configuration
+        if self.index_type == "HNSW":
+            self.index = faiss.IndexHNSWFlat(self.dimension, self.hnsw_neighbors)
+            self.index.hnsw.efConstruction = 40
+            self.index.hnsw.efSearch = self.nprobe
+        else:
+            self.index = faiss.IndexFlatIP(self.dimension)
         self.metadata = []
         self.id_counter = 0
     
     def stats(self) -> Dict[str, Any]:
         """Get index statistics."""
-        return {
+        stats = {
             "total_vectors": self.index.ntotal,
             "dimension": self.dimension,
             "metadata_count": len(self.metadata),
-            "index_type": "FAISS IndexFlatIP"
+            "index_type": f"FAISS {self.index_type}"
         }
+
+        # Add HNSW-specific stats
+        if self.index_type == "HNSW":
+            stats["hnsw_neighbors"] = self.hnsw_neighbors
+            stats["hnsw_ef_search"] = self.nprobe
+
+        return stats
 
 
 class SimpleInMemoryIndex:
@@ -608,6 +655,86 @@ class LexicalIndex:
         }
 
 
+class PerformanceMetrics:
+    """Track performance metrics for indexing and querying operations."""
+
+    def __init__(self):
+        self.indexing_times = []
+        self.query_times = []
+        self.embedding_times = []
+        self.total_indexed = 0
+        self.total_queries = 0
+        self.last_index_time = None
+        self.last_query_time = None
+
+    def record_indexing(self, duration: float, num_chunks: int):
+        """Record indexing operation metrics."""
+        self.indexing_times.append(duration)
+        self.total_indexed += num_chunks
+        self.last_index_time = datetime.now()
+
+    def record_query(self, duration: float):
+        """Record query operation metrics."""
+        self.query_times.append(duration)
+        self.total_queries += 1
+        self.last_query_time = datetime.now()
+
+    def record_embedding(self, duration: float):
+        """Record embedding generation time."""
+        self.embedding_times.append(duration)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get performance statistics."""
+        stats = {
+            "total_indexed": self.total_indexed,
+            "total_queries": self.total_queries,
+            "last_index_time": self.last_index_time.isoformat() if self.last_index_time else None,
+            "last_query_time": self.last_query_time.isoformat() if self.last_query_time else None
+        }
+
+        # Indexing stats
+        if self.indexing_times:
+            stats["indexing"] = {
+                "avg_time_seconds": sum(self.indexing_times) / len(self.indexing_times),
+                "min_time_seconds": min(self.indexing_times),
+                "max_time_seconds": max(self.indexing_times),
+                "total_operations": len(self.indexing_times),
+                "avg_chunks_per_second": self.total_indexed / sum(self.indexing_times) if sum(self.indexing_times) > 0 else 0
+            }
+
+        # Query stats
+        if self.query_times:
+            stats["querying"] = {
+                "avg_time_seconds": sum(self.query_times) / len(self.query_times),
+                "min_time_seconds": min(self.query_times),
+                "max_time_seconds": max(self.query_times),
+                "total_operations": len(self.query_times),
+                "p95_latency": sorted(self.query_times)[int(len(self.query_times) * 0.95)] if len(self.query_times) > 1 else self.query_times[0],
+                "p99_latency": sorted(self.query_times)[int(len(self.query_times) * 0.99)] if len(self.query_times) > 1 else self.query_times[0]
+            }
+
+        # Embedding stats
+        if self.embedding_times:
+            stats["embedding_generation"] = {
+                "avg_time_seconds": sum(self.embedding_times) / len(self.embedding_times),
+                "min_time_seconds": min(self.embedding_times),
+                "max_time_seconds": max(self.embedding_times),
+                "total_operations": len(self.embedding_times)
+            }
+
+        return stats
+
+    def reset(self):
+        """Reset all metrics."""
+        self.indexing_times = []
+        self.query_times = []
+        self.embedding_times = []
+        self.total_indexed = 0
+        self.total_queries = 0
+        self.last_index_time = None
+        self.last_query_time = None
+
+
 class VectorIndex:
     """
     Main vector index class with hybrid retrieval support.
@@ -626,14 +753,33 @@ class VectorIndex:
 
         # Choose backend
         if FAISS_AVAILABLE:
-            self.index = FAISSIndex(self.dimension)
-            logger.info("Using FAISS backend")
+            # Get FAISS configuration from unified config
+            if CONFIG_AVAILABLE and _config:
+                index_type = _config.indexing.faiss_index_type
+                hnsw_neighbors = _config.indexing.faiss_hnsw_neighbors
+                nprobe = _config.indexing.faiss_nprobe
+            else:
+                # Fallback to environment variables
+                index_type = os.getenv("FAISS_INDEX_TYPE", "HNSW")
+                hnsw_neighbors = int(os.getenv("FAISS_HNSW_NEIGHBORS", "32"))
+                nprobe = int(os.getenv("FAISS_NPROBE", "10"))
+
+            self.index = FAISSIndex(
+                self.dimension,
+                index_type=index_type,
+                hnsw_neighbors=hnsw_neighbors,
+                nprobe=nprobe
+            )
+            logger.info(f"Using FAISS backend with {index_type} index")
         else:
             self.index = SimpleInMemoryIndex(self.dimension)
             logger.info("Using in-memory fallback backend")
 
         # Initialize lexical index for hybrid search
         self.lexical_index = LexicalIndex() if enable_hybrid else None
+
+        # Initialize performance metrics
+        self.metrics = PerformanceMetrics()
 
         # Ensure data directory exists
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -645,6 +791,9 @@ class VectorIndex:
         """Insert text chunks into the index."""
         if not chunks:
             return {"indexed_count": 0, "message": "No chunks to index"}
+
+        # Start timing
+        start_time = time.time()
 
         try:
             # Extract texts, metadata, and file paths for code detection
@@ -681,7 +830,10 @@ class VectorIndex:
 
             # Generate embeddings with code-specific model where appropriate
             logger.info(f"Generating embeddings for {len(texts)} texts")
+            embedding_start = time.time()
             embeddings = self.embedding_generator.encode(texts, file_paths)
+            embedding_time = time.time() - embedding_start
+            self.metrics.record_embedding(embedding_time)
 
             # Add to vector index
             ids = self.index.add(embeddings, metadata)
@@ -694,17 +846,144 @@ class VectorIndex:
             # Save indexes
             self.save()
 
-            logger.info(f"Successfully indexed {len(ids)} chunks")
+            # Record performance metrics
+            total_time = time.time() - start_time
+            self.metrics.record_indexing(total_time, len(ids))
+
+            logger.info(f"Successfully indexed {len(ids)} chunks in {total_time:.2f}s (embedding: {embedding_time:.2f}s)")
             return {
                 "indexed_count": len(ids),
                 "message": "Chunks indexed successfully",
                 "ids": ids,
-                "hybrid_enabled": self.enable_hybrid
+                "hybrid_enabled": self.enable_hybrid,
+                "performance": {
+                    "total_time_seconds": total_time,
+                    "embedding_time_seconds": embedding_time,
+                    "chunks_per_second": len(ids) / total_time if total_time > 0 else 0
+                }
             }
 
         except Exception as e:
             logger.error(f"Failed to insert chunks: {e}")
             raise
+
+    def insert_parallel(self, chunks: List[Dict[str, Any]], batch_size: int = 1000, num_workers: int = None) -> Dict[str, Any]:
+        """
+        Insert text chunks into the index using parallel processing.
+
+        Args:
+            chunks: List of chunks to index
+            batch_size: Number of chunks to process per batch
+            num_workers: Number of parallel workers (defaults to CPU count)
+
+        Returns:
+            Dictionary with indexing statistics
+        """
+        if not chunks:
+            return {"indexed_count": 0, "message": "No chunks to index"}
+
+        # For small datasets, use regular insert
+        if len(chunks) < batch_size:
+            logger.info(f"Small dataset ({len(chunks)} chunks), using regular insert")
+            return self.insert(chunks)
+
+        try:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            # Determine number of workers
+            if num_workers is None:
+                num_workers = min(mp.cpu_count(), 4)  # Cap at 4 to avoid memory issues
+
+            logger.info(f"Parallel indexing {len(chunks)} chunks with {num_workers} workers, batch_size={batch_size}")
+
+            # Split chunks into batches
+            batches = []
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i + batch_size]
+                batches.append(batch)
+
+            logger.info(f"Split into {len(batches)} batches")
+
+            # Process batches in parallel
+            all_embeddings = []
+            all_metadata = []
+            all_texts = []
+
+            # Process each batch sequentially but generate embeddings in parallel
+            # (FAISS index is not thread-safe, so we can't add in parallel)
+            for batch_idx, batch in enumerate(batches):
+                logger.info(f"Processing batch {batch_idx + 1}/{len(batches)}")
+
+                # Extract texts and metadata from batch
+                texts = []
+                metadata = []
+                file_paths = []
+
+                for chunk in batch:
+                    text = chunk.get("text", "")
+                    if not text.strip():
+                        continue
+
+                    texts.append(text)
+
+                    # Get file path for code-specific embeddings
+                    chunk_meta = chunk.get("meta", {})
+                    file_path = chunk_meta.get("file_path", "")
+                    file_paths.append(file_path)
+
+                    # Prepare metadata
+                    meta = {
+                        "text": text,
+                        "meta": chunk_meta,
+                        "chunk_id": chunk.get("chunk_id"),
+                        "source": chunk.get("source", "unknown"),
+                        "indexed_at": datetime.now().isoformat(),
+                        "content_type": self._detect_content_type(text, file_path, chunk_meta)
+                    }
+                    metadata.append(meta)
+
+                if texts:
+                    # Generate embeddings for this batch
+                    embeddings = self.embedding_generator.encode(texts, file_paths)
+                    all_embeddings.append(embeddings)
+                    all_metadata.extend(metadata)
+                    all_texts.extend(texts)
+
+            # Combine all embeddings
+            if all_embeddings:
+                combined_embeddings = np.vstack(all_embeddings)
+
+                # Add to vector index (single operation for efficiency)
+                logger.info(f"Adding {len(combined_embeddings)} embeddings to index")
+                ids = self.index.add(combined_embeddings, all_metadata)
+
+                # Add to lexical index
+                if self.lexical_index:
+                    logger.info("Adding to lexical index")
+                    for doc_id, (text, meta) in zip(ids, zip(all_texts, all_metadata)):
+                        self.lexical_index.add(doc_id, text, meta)
+
+                # Save indexes
+                self.save()
+
+                logger.info(f"Successfully indexed {len(ids)} chunks in parallel")
+                return {
+                    "indexed_count": len(ids),
+                    "message": "Chunks indexed successfully (parallel)",
+                    "ids": ids,
+                    "hybrid_enabled": self.enable_hybrid,
+                    "batches_processed": len(batches),
+                    "workers_used": num_workers
+                }
+            else:
+                return {"indexed_count": 0, "message": "No valid texts to index"}
+
+        except Exception as e:
+            logger.error(f"Failed to insert chunks in parallel: {e}")
+            # Fallback to regular insert
+            logger.warning("Falling back to regular insert")
+            return self.insert(chunks)
 
     def _detect_content_type(self, text: str, file_path: str, meta: Dict) -> str:
         """Detect content type for tagging."""
@@ -744,6 +1023,9 @@ class VectorIndex:
             enable_reranking: Enable LLM-based re-ranking
             recency_boost: Override recency boost setting
         """
+        # Start timing
+        start_time = time.time()
+
         try:
             use_hybrid = enable_hybrid if enable_hybrid is not None else self.enable_hybrid
             use_recency = recency_boost if recency_boost is not None else RECENCY_BOOST_ENABLED
@@ -787,13 +1069,22 @@ class VectorIndex:
                 }
                 formatted_results.append(formatted_result)
 
+            # Record performance metrics
+            query_time = time.time() - start_time
+            self.metrics.record_query(query_time)
+
+            logger.info(f"Search completed in {query_time:.3f}s, returned {len(formatted_results)} results")
+
             return {
                 "query": query,
                 "results": formatted_results,
                 "total_results": len(formatted_results),
                 "timestamp": datetime.now().isoformat(),
                 "search_type": "hybrid" if use_hybrid else "dense",
-                "recency_boost_applied": use_recency
+                "recency_boost_applied": use_recency,
+                "performance": {
+                    "query_time_seconds": query_time
+                }
             }
 
         except Exception as e:
@@ -927,3 +1218,7 @@ class VectorIndex:
             base_stats["lexical_index"] = self.lexical_index.stats()
 
         return base_stats
+
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance statistics for the index."""
+        return self.metrics.get_stats()
