@@ -453,7 +453,7 @@ class CoordinatorAgent(AgentInterface):
     - Scope filtering: agents only see relevant contexts
     """
 
-    def __init__(self, config: Optional[CoordinatorConfig] = None, execution_resolver=None):
+    def __init__(self, config: Optional[CoordinatorConfig] = None, execution_resolver=None, reliability_manager=None):
         super().__init__(
             name="coordinator",
             execution_hint=ExecutionHint.LOCAL
@@ -464,6 +464,10 @@ class CoordinatorAgent(AgentInterface):
         self._invocation_hashes: Set[str] = set()
         self._invocation_history: List[Dict[str, Any]] = []
         self._execution_resolver = execution_resolver  # Phase 1 integration
+
+        # Phase 4: Agent Reliability
+        from services.core.agent_reliability import ReliabilityManager
+        self._reliability_manager = reliability_manager or ReliabilityManager()
 
     def capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(
@@ -635,7 +639,7 @@ class CoordinatorAgent(AgentInterface):
         bundle: ContextBundle
     ) -> ContextBundle:
         """
-        Invoke a specific agent with safety checks.
+        Invoke a specific agent with safety checks and reliability monitoring.
 
         Args:
             agent_name: Name of registered agent
@@ -650,11 +654,16 @@ class CoordinatorAgent(AgentInterface):
             LoopDetectedError: If same input detected
             AgentTimeoutError: If agent times out
             KeyError: If agent not registered
+            Exception: If circuit breaker is open
         """
         if agent_name not in self._agents:
             raise KeyError(f"Agent not registered: {agent_name}")
 
         agent = self._agents[agent_name]
+
+        # Phase 4: Check circuit breaker
+        if not self._reliability_manager.can_invoke(agent_name):
+            raise Exception(f"Circuit breaker open for agent: {agent_name}")
 
         # Check safety limits
         self._check_limits(bundle, agent_name)
@@ -677,21 +686,65 @@ class CoordinatorAgent(AgentInterface):
                 timeout=self._config.agent_timeout_seconds
             )
 
+            # Calculate response time
+            response_time = (utc_now() - start_time).total_seconds()
+
+            # Phase 4: Validate and score output
+            if result.contexts:
+                # Get the last context (most recent output from agent)
+                latest_output = result.contexts[-1]
+
+                reliability_result = self._reliability_manager.process_output(
+                    agent_name=agent_name,
+                    output=latest_output,
+                    response_time=response_time
+                )
+
+                # Log reliability information
+                if not reliability_result["valid"]:
+                    logger.warning(
+                        f"Agent {agent_name} produced invalid output: "
+                        f"{reliability_result['validation'].errors}"
+                    )
+
+                if reliability_result["confidence"].score < 0.5:
+                    logger.warning(
+                        f"Agent {agent_name} produced low-confidence output "
+                        f"(score={reliability_result['confidence'].score:.2f}): "
+                        f"{', '.join(reliability_result['confidence'].reasoning)}"
+                    )
+
+                # Add reliability metadata to result
+                result.metadata["reliability"] = {
+                    "valid": reliability_result["valid"],
+                    "confidence_score": reliability_result["confidence"].score,
+                    "confidence_factors": reliability_result["confidence"].factors,
+                    "circuit_breaker_state": reliability_result["circuit_breaker_state"],
+                    "recommendations": reliability_result["recommendations"]
+                }
+
             # Record history
             self._invocation_history.append({
                 "agent": agent_name,
                 "input_contexts": len(filtered_bundle.contexts),
                 "output_contexts": len(result.contexts),
-                "duration_ms": int((utc_now() - start_time).total_seconds() * 1000),
-                "timestamp": start_time.isoformat()
+                "duration_ms": int(response_time * 1000),
+                "timestamp": start_time.isoformat(),
+                "reliability": result.metadata.get("reliability", {})
             })
 
             return result
 
         except asyncio.TimeoutError:
+            # Phase 4: Record failure in circuit breaker
+            self._reliability_manager.get_circuit_breaker(agent_name).record_failure()
             raise AgentTimeoutError(
                 f"Agent {agent_name} timed out after {self._config.agent_timeout_seconds}s"
             )
+        except Exception as e:
+            # Phase 4: Record failure in circuit breaker
+            self._reliability_manager.get_circuit_breaker(agent_name).record_failure()
+            raise
         finally:
             self._invocation_depth -= 1
 
@@ -703,6 +756,10 @@ class CoordinatorAgent(AgentInterface):
     def get_invocation_history(self) -> List[Dict[str, Any]]:
         """Get history of agent invocations."""
         return list(self._invocation_history)
+
+    def get_reliability_stats(self) -> Dict[str, Any]:
+        """Get reliability statistics for all agents (Phase 4)."""
+        return self._reliability_manager.get_stats()
 
     async def invoke(self, bundle: ContextBundle) -> ContextBundle:
         """
@@ -1790,6 +1847,10 @@ class ProductionOrchestrator:
         strategy = mode_map.get(mode.lower(), ExecutionStrategy.HYBRID_AUTO)
         self.execution_resolver = ExecutionResolver(strategy)
 
+        # Phase 4: Initialize reliability manager
+        from services.core.agent_reliability import ReliabilityManager
+        self.reliability_manager = ReliabilityManager()
+
         logger.info(f"ProductionOrchestrator initialized: mode={mode}, strategy={strategy.value}")
 
     def run(self, repo_path: str, task: str = "full_analysis",
@@ -2304,8 +2365,15 @@ class EnhancedOrchestrator:
         strategy = mode_map.get(mode.lower(), ExecutionStrategy.HYBRID_AUTO)
         self.execution_resolver = ExecutionResolver(strategy)
 
-        # Pass execution_resolver to coordinator
-        self.coordinator = CoordinatorAgent(execution_resolver=self.execution_resolver)
+        # Phase 4: Initialize reliability manager
+        from services.core.agent_reliability import ReliabilityManager
+        self.reliability_manager = ReliabilityManager()
+
+        # Pass execution_resolver and reliability_manager to coordinator
+        self.coordinator = CoordinatorAgent(
+            execution_resolver=self.execution_resolver,
+            reliability_manager=self.reliability_manager
+        )
         self.code_index = get_code_index()
         self.transport = AgentTransport(
             TransportConfig(base_url=remote_url or "http://localhost:8001")
