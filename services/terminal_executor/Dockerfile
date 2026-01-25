@@ -16,13 +16,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
 WORKDIR /app
 
 # Copy requirements
-COPY ../../requirements.txt .
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY services/terminal_executor/ .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 executor && \

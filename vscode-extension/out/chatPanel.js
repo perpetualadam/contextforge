@@ -67,8 +67,9 @@ class ContextForgeChatProvider {
         return session;
     }
     async handleSendMessage(messageContent, attachments) {
-        if (!messageContent.trim() && (!attachments || attachments.length === 0))
+        if (!messageContent.trim() && (!attachments || attachments.length === 0)) {
             return;
+        }
         // Add user message
         const userMessage = {
             id: this.generateId(),
@@ -174,8 +175,9 @@ class ContextForgeChatProvider {
         }
     }
     loadChatHistory() {
-        if (!this._config.chatHistoryEnabled)
+        if (!this._config.chatHistoryEnabled) {
             return;
+        }
         try {
             const workspaceState = vscode.workspace.getConfiguration('contextforge');
             const savedSessions = workspaceState.get('chatSessions', []);
@@ -197,8 +199,9 @@ class ContextForgeChatProvider {
         }
     }
     saveChatHistory() {
-        if (!this._config.chatHistoryEnabled)
+        if (!this._config.chatHistoryEnabled) {
             return;
+        }
         try {
             // Save only essential data to avoid storage bloat
             const sessionsToSave = this._sessions.slice(0, this._config.chatMaxHistory);

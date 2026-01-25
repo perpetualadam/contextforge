@@ -5,9 +5,17 @@ A complete local-first context engine and AI assistant pipeline for intelligent 
 ## 🚀 Features
 
 - **Local-First Architecture**: Privacy-focused design with optional remote LLM support
-- **Multi-Language Support**: Python, JavaScript/TypeScript, Markdown with AST-based chunking
-- **Vector Search**: FAISS-powered semantic search with embedding generation
-- **Multi-LLM Backend**: Ollama, LM Studio, OpenAI, Anthropic, Mistral with intelligent fallback
+- **Multi-Language Support**: 15+ languages with tree-sitter AST-based and regex chunking
+  - **Tree-sitter support**: Python, JavaScript, TypeScript, Java, Rust, Go, C/C++, C#, Ruby, PHP, Kotlin, Julia, HTML, CSS
+  - **Hybrid chunking**: Automatic selection between tree-sitter (incremental) and regex (batch) modes
+  - **Regex fallback**: Additional languages including Swift, R, Scala, Lua, Perl, Shell
+- **Vector Search**: FAISS-powered semantic search with hybrid retrieval (dense + lexical)
+  - **Dual embeddings**: all-mpnet-base-v2 (general) + CodeBERT (code-specific)
+  - **HNSW indexing**: Optimized for large datasets (100k+ vectors)
+  - **Recency boosting**: Prioritize recently modified code
+- **Multi-LLM Backend**: 8 providers with intelligent fallback
+  - **Local**: Ollama, LM Studio
+  - **Cloud**: OpenAI, Anthropic, Mistral, DeepSeek, Grok (xAI), Groq
 - **Web Search Integration**: SerpAPI, Bing, Google CSE with scraping fallback
 - **VS Code Extension**: Native editor integration with workspace ingestion, query interface, and AI chat
 - **AI Chat Interface**: Interactive chat panel with multi-turn conversations, markdown rendering, and code actions

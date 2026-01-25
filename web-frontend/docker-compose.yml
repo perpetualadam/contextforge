@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  web-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: contextforge-web
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    networks:
+      - contextforge-network
+    depends_on:
+      - api-gateway
+
+  api-gateway:
+    # This assumes you're running the ContextForge API separately
+    # or have it defined in the main docker-compose.yml
+    image: contextforge-api:latest
+    container_name: contextforge-api
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - contextforge-network
+
+networks:
+  contextforge-network:
+    driver: bridge
+

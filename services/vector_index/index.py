@@ -226,13 +226,16 @@ class FAISSIndex:
         if index_type == "HNSW":
             # HNSW index for approximate nearest neighbor search
             # Better performance on large datasets (100k+ vectors)
+            # IndexHNSWFlat uses L2 distance, not inner product
             self.index = faiss.IndexHNSWFlat(dimension, hnsw_neighbors)
             self.index.hnsw.efConstruction = 40  # Quality of index construction
             self.index.hnsw.efSearch = nprobe  # Quality of search
+            self.uses_l2_distance = True  # Track that this index uses L2 distance
             logger.info(f"Created HNSW index: M={hnsw_neighbors}, efSearch={nprobe}")
         else:
             # Flat index for exact search (default fallback)
             self.index = faiss.IndexFlatIP(dimension)
+            self.uses_l2_distance = False  # This index uses inner product
             logger.info("Created Flat index for exact search")
     
     def add(self, embeddings: np.ndarray, metadata: List[Dict[str, Any]]) -> List[int]:
@@ -262,24 +265,35 @@ class FAISSIndex:
         # Normalize query embedding
         query_embedding = query_embedding.reshape(1, -1)
         faiss.normalize_L2(query_embedding)
-        
+
         # Search
         scores, indices = self.index.search(query_embedding, top_k)
-        
+
         # Prepare results
         results = []
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
             if idx == -1:  # No more results
                 break
-            
+
+            # Convert L2 distance to similarity score if using HNSW
+            # For normalized vectors: L2^2 = 2(1 - cosine_similarity)
+            # So: cosine_similarity = 1 - (L2^2 / 2)
+            if self.uses_l2_distance:
+                # L2 distance for normalized vectors ranges from 0 (identical) to 2 (opposite)
+                # Convert to similarity score: 0 distance = 1.0 similarity, 2 distance = 0.0 similarity
+                similarity_score = max(0.0, 1.0 - (score / 2.0))
+            else:
+                # Inner product already returns similarity scores
+                similarity_score = score
+
             result = {
                 "id": idx,
-                "score": float(score),
+                "score": float(similarity_score),
                 "metadata": self.metadata[idx] if idx < len(self.metadata) else {},
                 "rank": i + 1
             }
             results.append(result)
-        
+
         return results
     
     def save(self, index_path: str, metadata_path: str):
@@ -337,8 +351,10 @@ class FAISSIndex:
             self.index = faiss.IndexHNSWFlat(self.dimension, self.hnsw_neighbors)
             self.index.hnsw.efConstruction = 40
             self.index.hnsw.efSearch = self.nprobe
+            self.uses_l2_distance = True
         else:
             self.index = faiss.IndexFlatIP(self.dimension)
+            self.uses_l2_distance = False
         self.metadata = []
         self.id_counter = 0
     

@@ -244,8 +244,8 @@ class HierarchicalRetriever:
     def _retrieve_test_context(self, query: str, top_k: int = 3) -> List[ContextResult]:
         """Retrieve related test outcomes."""
         try:
-            from services.metrics.test_correlation import TestCorrelationTracker
-            tracker = TestCorrelationTracker()
+            from services.metrics.test_correlation import CorrelationTracker
+            tracker = CorrelationTracker()
 
             # Find tests related to the query terms
             correlations = tracker.get_correlations(query)

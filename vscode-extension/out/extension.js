@@ -7,6 +7,8 @@ const path = require("path");
 const chatPanel_1 = require("./chatPanel");
 const promptPanel_1 = require("./promptPanel");
 const gitIntegration_1 = require("./gitIntegration");
+const agentPanel_1 = require("./agentPanel");
+const taskPanel_1 = require("./tools/taskPanel");
 class ContextForgeProvider {
     constructor(config) {
         this.config = config;
@@ -455,6 +457,12 @@ function activate(context) {
     const promptProvider = new promptPanel_1.ContextForgePromptProvider(context.extensionUri);
     promptProvider.setConfig(config);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(promptPanel_1.ContextForgePromptProvider.viewType, promptProvider));
+    // Create agent status provider
+    const agentProvider = new agentPanel_1.AgentStatusProvider(context.extensionUri, config);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(agentPanel_1.AgentStatusProvider.viewType, agentProvider));
+    // Create task panel provider
+    const taskPanelProvider = new taskPanel_1.TaskPanelProvider(context.extensionUri, { apiUrl: config.apiUrl });
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(taskPanel_1.TaskPanelProvider.viewType, taskPanelProvider));
     // Create status bar item for auto-terminal mode
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.command = 'contextforge.toggleAutoTerminal';
@@ -667,6 +675,8 @@ function activate(context) {
         if (e.affectsConfiguration('contextforge')) {
             const newConfig = getConfig();
             chatProvider.updateConfig(newConfig);
+            agentProvider.updateConfig(newConfig);
+            taskPanelProvider.updateConfig({ apiUrl: newConfig.apiUrl });
             // Update Git integration config
             if (gitIntegration && newConfig.gitEnabled) {
                 gitIntegration = new gitIntegration_1.GitIntegration(vscode.workspace.workspaceFolders[0].uri.fsPath, {
@@ -696,8 +706,9 @@ function activate(context) {
                 'Delete branch',
                 'View all branches'
             ], { placeHolder: 'Select branch action' });
-            if (!action)
+            if (!action) {
                 return;
+            }
             const branches = await gitIntegration.getBranches();
             const currentBranch = branches.current;
             switch (action) {
@@ -766,8 +777,9 @@ function activate(context) {
                 prompt: 'Enter PR title',
                 placeHolder: 'feat: add new feature'
             });
-            if (!title)
+            if (!title) {
                 return;
+            }
             const body = await vscode.window.showInputBox({
                 prompt: 'Enter PR description (optional)',
                 placeHolder: 'Describe your changes...'
@@ -777,8 +789,9 @@ function activate(context) {
                 value: config.defaultBranch,
                 placeHolder: 'main'
             });
-            if (!baseBranch)
+            if (!baseBranch) {
                 return;
+            }
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: 'Creating pull request...',

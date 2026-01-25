@@ -17,17 +17,18 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from functools import wraps
 from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import requests
 import structlog
 import base64
 import io
 from pathlib import Path
-import PyPDF2
+from pypdf import PdfReader
 from docx import Document
 from PIL import Image
 import uuid
@@ -54,6 +55,23 @@ try:
     REMOTE_AGENTS_ENABLED = True
 except ImportError:
     REMOTE_AGENTS_ENABLED = False
+
+# Import security modules
+try:
+    from services.security import (
+        SecurityHeadersMiddleware,
+        RequestSizeLimitMiddleware,
+        AuditLoggingMiddleware,
+        CSRFMiddleware,
+        get_jwt_manager,
+        get_rate_limiter,
+        get_audit_logger
+    )
+    from auth_routes import router as auth_router
+    SECURITY_MODULES_ENABLED = True
+except ImportError:
+    SECURITY_MODULES_ENABLED = False
+    logger.warning("Security modules not available - running without enhanced security")
 
 # Configure structured logging
 structlog.configure(
@@ -208,45 +226,22 @@ async def check_rate_limit(request: Request) -> None:
         )
 
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="ContextForge API Gateway",
-    description="Local-first context engine and augment/assistant pipeline",
-    version="1.0.0"
-)
-
-# Add CORS middleware - Security hardened
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,  # Set to True only if needed for specific use cases
-    allow_methods=ALLOWED_METHODS,
-    allow_headers=ALLOWED_HEADERS,
-)
-
-# Initialize RAG pipeline
-rag_pipeline = RAGPipeline()
-
 # Initialize Event Bus (Phase 1 integration)
 from services.core.event_bus import get_event_bus, Event, EventType
 event_bus = get_event_bus()
 
-# Register remote agent routes if available
-if REMOTE_AGENTS_ENABLED:
-    app.include_router(agent_router)
-    app.include_router(task_router)
-    app.include_router(ws_router)
+# Initialize RAG pipeline
+rag_pipeline = RAGPipeline()
 
 
-# Startup event to publish SERVICE_STARTED
-@app.on_event("startup")
-async def startup_event():
-    """Validate configuration and publish service started event."""
-    # Phase 1: Startup validation
+# Lifespan context manager for startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events."""
+    # Startup
     from services.startup_validator import validate_startup
     if not validate_startup():
         logger.error("Startup validation failed - some checks did not pass")
-        # Continue anyway but log warning
         logger.warning("Continuing with startup despite validation warnings")
 
     # Publish SERVICE_STARTED event
@@ -257,15 +252,72 @@ async def startup_event():
     ))
     logger.info("API Gateway started and event published")
 
+    yield
+
+    # Shutdown (if needed in the future)
+    logger.info("API Gateway shutting down")
+
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(
+    title="ContextForge API Gateway",
+    description="Local-first context engine and augment/assistant pipeline",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware - Security hardened
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,  # Enable for secure cookie-based auth
+    allow_methods=ALLOWED_METHODS,
+    allow_headers=ALLOWED_HEADERS + ["X-CSRF-Token"],  # Add CSRF token header
+)
+
+# Add security middleware if available
+if SECURITY_MODULES_ENABLED:
+    # Add security headers (CSP, HSTS, etc.)
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # Add request size limits
+    app.add_middleware(RequestSizeLimitMiddleware)
+
+    # Add audit logging
+    app.add_middleware(AuditLoggingMiddleware)
+
+    # Add CSRF protection
+    app.add_middleware(CSRFMiddleware, exempt_paths=[
+        "/health",
+        "/docs",
+        "/openapi.json",
+        "/auth/login",
+        "/auth/register"
+    ])
+
+    logger.info("Security middleware enabled")
+
+# Register authentication routes if available
+if SECURITY_MODULES_ENABLED:
+    app.include_router(auth_router)
+    logger.info("Authentication routes registered")
+
+# Register remote agent routes if available
+if REMOTE_AGENTS_ENABLED:
+    app.include_router(agent_router)
+    app.include_router(task_router)
+    app.include_router(ws_router)
+
 
 # Pydantic models with input validation
 class IngestRequest(BaseModel):
     path: str = Field(..., max_length=1024)
     recursive: bool = True
-    file_patterns: Optional[List[str]] = Field(None, max_items=50)
-    exclude_patterns: Optional[List[str]] = Field(None, max_items=50)
+    file_patterns: Optional[List[str]] = Field(None, max_length=50)
+    exclude_patterns: Optional[List[str]] = Field(None, max_length=50)
 
-    @validator('path')
+    @field_validator('path')
+    @classmethod
     def validate_path(cls, v):
         # Prevent path traversal
         if '..' in v:
@@ -280,7 +332,7 @@ class QueryRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=100)
     auto_terminal_mode: bool = False
     auto_terminal_timeout: int = Field(30, ge=1, le=300)
-    auto_terminal_whitelist: Optional[List[str]] = Field(None, max_items=50)
+    auto_terminal_whitelist: Optional[List[str]] = Field(None, max_length=50)
 
 
 class SearchRequest(BaseModel):
@@ -305,7 +357,8 @@ class TerminalRequest(BaseModel):
     environment: Optional[Dict[str, str]] = None
     stream: bool = False
 
-    @validator('working_directory')
+    @field_validator('working_directory')
+    @classmethod
     def validate_working_directory(cls, v):
         if v and '..' in v:
             raise ValueError("Path traversal not allowed")
@@ -377,7 +430,8 @@ class OrchestrationRequest(BaseModel):
     task: str = Field("full_analysis", max_length=100)
     output_format: str = Field("markdown", pattern="^(markdown|json|xml)$")
 
-    @validator('repo_path')
+    @field_validator('repo_path')
+    @classmethod
     def validate_repo_path(cls, v):
         if '..' in v:
             raise ValueError("Path traversal not allowed")
@@ -1365,7 +1419,7 @@ async def upload_file(
 def extract_text_from_pdf(content: bytes) -> str:
     """Extract text from PDF file."""
     try:
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
+        pdf_reader = PdfReader(io.BytesIO(content))
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text() + "\n"

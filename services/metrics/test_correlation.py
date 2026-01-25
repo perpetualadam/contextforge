@@ -8,7 +8,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from pydantic import BaseModel, Field
@@ -17,8 +17,8 @@ import uuid
 logger = logging.getLogger(__name__)
 
 
-class TestResult(BaseModel):
-    """Single test result."""
+class ExecutionResult(BaseModel):
+    """Single test execution result."""
     result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     test_name: str
     test_file: str
@@ -27,7 +27,7 @@ class TestResult(BaseModel):
     error_message: Optional[str] = None
     error_type: Optional[str] = None
     stack_trace: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CodeChange(BaseModel):
@@ -39,37 +39,37 @@ class CodeChange(BaseModel):
     lines_added: int = 0
     lines_removed: int = 0
     functions_changed: List[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class TestCorrelationResult(BaseModel):
     """Correlation between code changes and test results."""
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     code_change: CodeChange
-    test_results: List[TestResult]
-    
+    test_results: List["ExecutionResult"]
+
     # Correlation metrics
     tests_passed: int = 0
     tests_failed: int = 0
     pass_rate: float = 0.0
-    
+
     # Identified patterns
     likely_causes: List[str] = Field(default_factory=list)
     suggested_fixes: List[str] = Field(default_factory=list)
     related_files: List[str] = Field(default_factory=list)
-    
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class TestCorrelationTracker:
+class CorrelationTracker:
     """Tracks and analyzes test pass/fail correlations."""
-    
+
     def __init__(self):
         self._correlations: List[TestCorrelationResult] = []
-        self._test_history: Dict[str, List[TestResult]] = defaultdict(list)
+        self._test_history: Dict[str, List[ExecutionResult]] = defaultdict(list)
         self._file_test_map: Dict[str, List[str]] = defaultdict(list)  # file -> tests
-    
-    def record_test_result(self, result: TestResult) -> None:
+
+    def record_test_result(self, result: ExecutionResult) -> None:
         """Record a test result."""
         self._test_history[result.test_name].append(result)
         
@@ -79,7 +79,7 @@ class TestCorrelationTracker:
                 self._test_history[result.test_name][-100:]
     
     def correlate_change(self, change: CodeChange,
-                         test_results: List[TestResult]) -> TestCorrelationResult:
+                         test_results: List[ExecutionResult]) -> TestCorrelationResult:
         """Correlate a code change with test results."""
         correlation = TestCorrelationResult(
             code_change=change,
@@ -107,8 +107,8 @@ class TestCorrelationTracker:
         
         return correlation
     
-    def _analyze_failures(self, change: CodeChange, 
-                          failed_tests: List[TestResult]) -> List[str]:
+    def _analyze_failures(self, change: CodeChange,
+                          failed_tests: List[ExecutionResult]) -> List[str]:
         """Analyze test failures to identify likely causes."""
         causes = []
         
@@ -134,7 +134,7 @@ class TestCorrelationTracker:
         return list(set(causes))[:5]
     
     def _suggest_fixes(self, change: CodeChange,
-                       failed_tests: List[TestResult]) -> List[str]:
+                       failed_tests: List[ExecutionResult]) -> List[str]:
         """Suggest potential fixes for test failures."""
         suggestions = []
         
@@ -153,7 +153,7 @@ class TestCorrelationTracker:
         return list(set(suggestions))[:5]
     
     def _find_related_files(self, change: CodeChange,
-                            failed_tests: List[TestResult]) -> List[str]:
+                            failed_tests: List[ExecutionResult]) -> List[str]:
         """Find files related to the failures."""
         related = set()
         related.add(change.file_path)
@@ -193,10 +193,10 @@ class TestCorrelationTracker:
 # Singleton
 _tracker = None
 
-def get_test_correlation_tracker() -> TestCorrelationTracker:
+def get_test_correlation_tracker() -> CorrelationTracker:
     """Get singleton test correlation tracker."""
     global _tracker
     if _tracker is None:
-        _tracker = TestCorrelationTracker()
+        _tracker = CorrelationTracker()
     return _tracker
 

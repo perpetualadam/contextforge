@@ -15,7 +15,7 @@ if services_path not in sys.path:
 from metrics.retrieval_accuracy import (
     RetrievalAccuracyTracker, RetrievalResult, get_retrieval_tracker
 )
-from metrics.test_correlation import TestCorrelationTracker, TestResult, CodeChange
+from metrics.test_correlation import CorrelationTracker, ExecutionResult, CodeChange
 from metrics.llm_efficiency import LLMEfficiencyTracker, LLMRequest
 
 
@@ -97,13 +97,13 @@ class TestTestCorrelationTracker:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.tracker = TestCorrelationTracker()
+        self.tracker = CorrelationTracker()
         self.tracker._test_history.clear()
         self.tracker._correlations.clear()
 
     def test_record_test_result(self):
         """Test recording a test result."""
-        result = TestResult(
+        result = ExecutionResult(
             test_name="test_auth_login",
             test_file="tests/test_auth.py",
             passed=True,
@@ -127,8 +127,8 @@ class TestTestCorrelationTracker:
         )
 
         test_results = [
-            TestResult(test_name="test_auth_login", test_file="tests/test_auth.py", passed=True, duration_ms=100),
-            TestResult(test_name="test_auth_logout", test_file="tests/test_auth.py", passed=False, duration_ms=50),
+            ExecutionResult(test_name="test_auth_login", test_file="tests/test_auth.py", passed=True, duration_ms=100),
+            ExecutionResult(test_name="test_auth_logout", test_file="tests/test_auth.py", passed=False, duration_ms=50),
         ]
 
         correlation = self.tracker.correlate_change(change, test_results)
@@ -141,7 +141,7 @@ class TestTestCorrelationTracker:
         """Test flaky test detection."""
         # Record alternating pass/fail results
         for i in range(10):
-            result = TestResult(
+            result = ExecutionResult(
                 test_name="test_sometimes_fails",
                 test_file="tests/test_flaky.py",
                 passed=(i % 2 == 0),  # Alternating
@@ -158,7 +158,7 @@ class TestTestCorrelationTracker:
         """Test getting correlations."""
         change = CodeChange(file_path="src/auth.py", change_type="modified")
         test_results = [
-            TestResult(test_name="test_auth", test_file="tests/test_auth.py", passed=True, duration_ms=100),
+            ExecutionResult(test_name="test_auth", test_file="tests/test_auth.py", passed=True, duration_ms=100),
         ]
 
         correlation = self.tracker.correlate_change(change, test_results)

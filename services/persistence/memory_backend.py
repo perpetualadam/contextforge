@@ -7,7 +7,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
@@ -61,27 +61,27 @@ class MemorySessionStore:
         """Create a new session."""
         session = Session(
             user_id=user_id,
-            expires_at=datetime.utcnow() + self._timeout,
+            expires_at=datetime.now(timezone.utc) + self._timeout,
             metadata=metadata or {}
         )
         with self._lock:
             self._sessions[session.session_id] = session
         return session
-    
+
     def get_session(self, session_id: str) -> Optional[Session]:
         """Get session by ID."""
         with self._lock:
             session = self._sessions.get(session_id)
-            if session and session.expires_at and session.expires_at < datetime.utcnow():
+            if session and session.expires_at and session.expires_at < datetime.now(timezone.utc):
                 session.status = SessionStatus.EXPIRED
             return session
-    
+
     def update_session(self, session_id: str, context: Dict = None, metadata: Dict = None) -> Optional[Session]:
         """Update session context/metadata."""
         with self._lock:
             session = self._sessions.get(session_id)
             if session:
-                session.updated_at = datetime.utcnow()
+                session.updated_at = datetime.now(timezone.utc)
                 if context:
                     session.context.update(context)
                 if metadata:

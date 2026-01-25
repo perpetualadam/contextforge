@@ -59,23 +59,27 @@ def create_mcp_server_with_config(
         name=name,
         instructions="ContextForge - Local-first context engine and AI assistant pipeline. "
                     "Use the available tools to search codebases, query the RAG pipeline, "
-                    "search the web, and execute safe terminal commands.",
+                    "search the web, execute safe terminal commands, and edit files.",
         host=host,
         port=port
     )
-    
+
     # Register tools
     from .tools import register_tools
     register_tools(mcp)
-    
+
+    # Register file and code manipulation tools
+    from .file_tools import register_file_tools
+    register_file_tools(mcp)
+
     # Register resources
     from .resources import register_resources
     register_resources(mcp)
-    
+
     # Register prompts
     from .prompts import register_prompts
     register_prompts(mcp)
-    
+
     logger.info(f"ContextForge MCP server '{name}' initialized")
     return mcp
 

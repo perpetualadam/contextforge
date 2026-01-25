@@ -1,6 +1,9 @@
 """
 Agent Worker - Processes tasks from the queue.
 
+Refactored to use MultiModeAgent architecture with drift detection,
+fingerprinting, and safety mechanisms.
+
 Copyright (c) 2025 ContextForge
 """
 
@@ -9,11 +12,21 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+import sys
 
 from .models import (
     AgentInfo, AgentStatus, AgentCapability, AgentRegistration,
     TaskInfo, TaskStatus, HeartbeatRequest
 )
+
+# Import multi-mode agent
+try:
+    from .multi_mode_worker import RemoteMultiModeAgent, AgentMode
+    MULTI_MODE_ENABLED = True
+except ImportError:
+    logger.warning("Multi-mode agent not available, using legacy handlers")
+    MULTI_MODE_ENABLED = False
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +34,12 @@ logger = logging.getLogger(__name__)
 class AgentWorker:
     """
     Remote agent worker that processes tasks.
-    
+
     Can run standalone or connect to a coordinator.
+
+    Refactored to use MultiModeAgent for drift-safe operations.
     """
-    
+
     def __init__(
         self,
         agent_id: str = None,
@@ -42,17 +57,24 @@ class AgentWorker:
         ]
         self.max_concurrent_tasks = max_concurrent_tasks
         self.heartbeat_interval = heartbeat_interval
-        
+
         self._status = AgentStatus.OFFLINE
         self._current_tasks: Dict[str, asyncio.Task] = {}
         self._task_handlers: Dict[str, Callable] = {}
         self._running = False
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._coordinator_url: Optional[str] = None
-        
+
+        # Initialize multi-mode agent if available
+        if MULTI_MODE_ENABLED:
+            self.multi_mode_agent = RemoteMultiModeAgent(name=name)
+            logger.info(f"Multi-mode agent initialized for worker {self.agent_id}")
+        else:
+            self.multi_mode_agent = None
+
         # Register default task handlers
         self._register_default_handlers()
-        
+
         logger.info(f"Agent worker created: {self.agent_id}")
     
     def _register_default_handlers(self):
@@ -67,6 +89,15 @@ class AgentWorker:
         self.register_handler("vector_search", self._handle_vector_search)
         self.register_handler("llm_generation", self._handle_llm_generation)
         self.register_handler("batch_processing", self._handle_batch_processing)
+
+        # Register multi-mode handlers if available
+        if MULTI_MODE_ENABLED:
+            self.register_handler("plan", self._handle_plan_mode)
+            self.register_handler("implement", self._handle_implement_mode)
+            self.register_handler("review", self._handle_review_mode)
+            self.register_handler("index", self._handle_index_mode)
+            self.register_handler("test", self._handle_test_mode)
+            logger.info("Multi-mode handlers registered")
 
         # Register specialized agent handlers (per blueprint)
         self._register_specialized_handlers()
@@ -452,14 +483,56 @@ class AgentWorker:
             "errors": errors,
         }
 
+    # Multi-mode agent handlers
+
+    async def _handle_plan_mode(self, payload: Dict[str, Any]) -> Any:
+        """Handle PLAN mode tasks."""
+        if not self.multi_mode_agent:
+            return {"error": "Multi-mode agent not available"}
+
+        result = self.multi_mode_agent.execute(AgentMode.PLAN, payload)
+        return result.to_dict()
+
+    async def _handle_implement_mode(self, payload: Dict[str, Any]) -> Any:
+        """Handle IMPLEMENT mode tasks."""
+        if not self.multi_mode_agent:
+            return {"error": "Multi-mode agent not available"}
+
+        result = self.multi_mode_agent.execute(AgentMode.IMPLEMENT, payload)
+        return result.to_dict()
+
+    async def _handle_review_mode(self, payload: Dict[str, Any]) -> Any:
+        """Handle REVIEW mode tasks."""
+        if not self.multi_mode_agent:
+            return {"error": "Multi-mode agent not available"}
+
+        result = self.multi_mode_agent.execute(AgentMode.REVIEW, payload)
+        return result.to_dict()
+
+    async def _handle_index_mode(self, payload: Dict[str, Any]) -> Any:
+        """Handle INDEX mode tasks."""
+        if not self.multi_mode_agent:
+            return {"error": "Multi-mode agent not available"}
+
+        result = self.multi_mode_agent.execute(AgentMode.INDEX, payload)
+        return result.to_dict()
+
+    async def _handle_test_mode(self, payload: Dict[str, Any]) -> Any:
+        """Handle TEST mode tasks."""
+        if not self.multi_mode_agent:
+            return {"error": "Multi-mode agent not available"}
+
+        result = self.multi_mode_agent.execute(AgentMode.TEST, payload)
+        return result.to_dict()
+
     async def process_task(self, task: TaskInfo) -> Any:
         """Process a single task."""
         handler = self._task_handlers.get(task.task_type)
         if not handler:
             raise ValueError(f"No handler for task type: {task.task_type}")
-        
+
         logger.info(f"Processing task: {task.task_id} (type={task.task_type})")
-        
+
         try:
             result = await asyncio.wait_for(
                 handler(task.payload),

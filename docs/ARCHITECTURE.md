@@ -108,19 +108,26 @@ ContextForge is a local-first context engine designed for intelligent code analy
 4. Provide similarity search with configurable top-k
 
 ### Preprocessor Service (Port 8003)
-**Purpose**: Language-aware text chunking
-**Technology**: AST parsing, regex, and markdown processing
+**Purpose**: Language-aware text chunking with tree-sitter and regex support
+**Technology**: Tree-sitter AST parsing, regex patterns, and markdown processing
 **Key Features**:
-- **Python**: AST-based extraction of functions, classes, imports, docstrings
-- **JavaScript/TypeScript**: Regex-based function and class detection
+- **Tree-sitter AST Parsing**: 14 languages with semantic boundary detection
+  - Python, JavaScript, TypeScript, Java, Rust, Go, C/C++, C#, Ruby, PHP, Kotlin, Julia, HTML, CSS
+- **Hybrid Chunking Strategy**: Automatic mode selection
+  - Tree-sitter for incremental updates (live editing)
+  - Regex for batch operations (initial indexing)
+  - Automatic fallback on parsing errors
+- **Regex Chunkers**: Additional language support
+  - Swift, R, Scala, Lua, Perl, Shell, and more
 - **Markdown**: Heading-based chunking with code block extraction
 - Configurable chunk size and overlap
-- Metadata preservation (file path, line numbers, chunk type)
+- Metadata preservation (file path, line numbers, chunk type, AST node info)
 
 **Chunking Strategies**:
-- **Semantic Chunking**: Respects code structure boundaries
+- **Semantic Chunking**: Respects code structure boundaries using AST
+- **Incremental Parsing**: Efficient re-parsing of changed code sections
 - **Overlap Management**: Prevents context loss at boundaries
-- **Metadata Enrichment**: Adds source location and type information
+- **Metadata Enrichment**: Adds source location, type, and AST node information
 
 ### Connector Service (Port 8002)
 **Purpose**: File system integration and repository scanning
@@ -205,10 +212,11 @@ Question → Vector Search → Web Search → Context Ranking → Prompt Composi
 - **tenacity**: Retry logic with exponential backoff
 
 ### Language Processing
-- **tree-sitter**: Syntax tree parsing for Python
-- **AST**: Python Abstract Syntax Tree parsing
-- **Regex**: JavaScript/TypeScript pattern matching
+- **tree-sitter**: Syntax tree parsing for 14+ languages (Python, JavaScript, TypeScript, Java, Rust, Go, C/C++, C#, Ruby, PHP, Kotlin, Julia, HTML, CSS)
+- **AST**: Python Abstract Syntax Tree parsing (fallback/legacy)
+- **Regex**: Pattern matching for additional languages (Swift, R, Scala, Lua, Perl, Shell)
 - **Markdown**: Heading-based document structure
+- **Hybrid Chunker**: Automatic selection between tree-sitter and regex based on context
 
 ### Infrastructure
 - **Docker Compose**: Service orchestration and networking

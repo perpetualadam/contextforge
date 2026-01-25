@@ -11,7 +11,7 @@ import json
 import hashlib
 import logging
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from abc import ABC, abstractmethod
 
@@ -60,19 +60,19 @@ class MemoryCache(CacheBackend):
             entry = self._cache.get(key)
             if entry is None:
                 return None
-            if entry["expires_at"] and datetime.utcnow() > entry["expires_at"]:
+            if entry["expires_at"] and datetime.now(timezone.utc) > entry["expires_at"]:
                 del self._cache[key]
                 return None
             return entry["value"]
-    
+
     def set(self, key: str, value: str, ttl: int = 3600) -> bool:
         """Set value in cache with TTL."""
         with self._lock:
-            expires_at = datetime.utcnow() + timedelta(seconds=ttl) if ttl > 0 else None
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl) if ttl > 0 else None
             self._cache[key] = {
                 "value": value,
                 "expires_at": expires_at,
-                "created_at": datetime.utcnow()
+                "created_at": datetime.now(timezone.utc)
             }
             return True
     

@@ -127,6 +127,139 @@ class TestHandler:
             return {"success": False, "error": "Test execution timed out"}
 
 
+class ReasoningHandler:
+    """Handler for reasoning agent tasks - LLM-based analysis and planning."""
+
+    async def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Perform reasoning/analysis task.
+
+        Payload:
+            query: The question or task to reason about
+            context: Additional context for reasoning
+            reasoning_type: Type of reasoning (analysis, planning, recommendation)
+            max_tokens: Maximum tokens for response
+        """
+        query = payload.get("query", "")
+        context = payload.get("context", "")
+        reasoning_type = payload.get("reasoning_type", "analysis")
+
+        return await self._perform_reasoning(query, context, reasoning_type, payload)
+
+    async def _perform_reasoning(
+        self,
+        query: str,
+        context: str,
+        reasoning_type: str,
+        payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Perform LLM-based reasoning."""
+        from services.prompt_enhancer import (
+            PromptBuilder, TaskType, get_context_aggregator
+        )
+
+        result = {
+            "query": query,
+            "reasoning_type": reasoning_type,
+            "generated": False
+        }
+
+        if not query:
+            result["error"] = "No query provided"
+            return result
+
+        # Map reasoning type to task type
+        task_type_map = {
+            "analysis": TaskType.CODE_ANALYSIS,
+            "planning": TaskType.ARCHITECTURE,
+            "recommendation": TaskType.CODE_ANALYSIS,
+            "explanation": TaskType.EXPLANATION,
+        }
+        task_type = task_type_map.get(reasoning_type, TaskType.CODE_ANALYSIS)
+
+        try:
+            aggregator = get_context_aggregator()
+            ctx = await aggregator.gather_context(query, payload.get("file_path", ""))
+
+            builder = PromptBuilder()
+            result["prompt"] = builder.build_prompt(
+                task_type,
+                ctx,
+                query=query,
+                additional_context=context
+            )
+            result["generated"] = True
+        except Exception as e:
+            logger.warning(f"Reasoning prompt build failed: {e}")
+            result["error"] = str(e)
+
+        return result
+
+
+class CritiqueHandler:
+    """Handler for critique agent tasks - code and analysis review."""
+
+    async def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Perform critique/review task.
+
+        Payload:
+            content: Content to critique (code, analysis, etc.)
+            content_type: Type of content (code, analysis, plan)
+            critique_focus: Focus areas (correctness, style, performance, security)
+            file_path: Optional file path for context
+        """
+        content = payload.get("content", "")
+        content_type = payload.get("content_type", "code")
+        critique_focus = payload.get("critique_focus", ["correctness", "style"])
+
+        return await self._perform_critique(content, content_type, critique_focus, payload)
+
+    async def _perform_critique(
+        self,
+        content: str,
+        content_type: str,
+        critique_focus: List[str],
+        payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Perform critique on content."""
+        from services.prompt_enhancer import (
+            PromptBuilder, TaskType, get_context_aggregator
+        )
+
+        result = {
+            "content_type": content_type,
+            "critique_focus": critique_focus,
+            "generated": False
+        }
+
+        if not content:
+            result["error"] = "No content to critique"
+            return result
+
+        # Use code review for code content, otherwise general analysis
+        task_type = TaskType.CODE_REVIEW if content_type == "code" else TaskType.CODE_ANALYSIS
+
+        try:
+            aggregator = get_context_aggregator()
+            file_path = payload.get("file_path", "")
+            ctx = await aggregator.gather_context(content[:500], file_path)
+
+            builder = PromptBuilder()
+            result["prompt"] = builder.build_prompt(
+                task_type,
+                ctx,
+                code=content if content_type == "code" else "",
+                additional_context=f"Focus areas: {', '.join(critique_focus)}"
+            )
+            result["generated"] = True
+        except Exception as e:
+            logger.warning(f"Critique prompt build failed: {e}")
+            result["error"] = str(e)
+
+        return result
+
+
 class ReviewHandler:
     """Handler for review agent tasks - static analysis + bug detection."""
     
@@ -322,13 +455,81 @@ class DocHandler:
         return result
 
 
+class DebuggingHandler:
+    """Handler for debugging agent tasks - diagnostics and context tracing."""
+
+    async def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run diagnostics on context bundle.
+
+        Payload:
+            contexts: List of context dicts to analyze
+            mutation_log: Optional mutation log for lineage tracing
+            config: Optional diagnostic config overrides
+        """
+        contexts = payload.get("contexts", [])
+        mutation_log = payload.get("mutation_log", [])
+        config = payload.get("config", {})
+
+        if not contexts:
+            return {"error": "No contexts provided for diagnostics"}
+
+        return await self._run_diagnostics(contexts, mutation_log, config)
+
+    async def _run_diagnostics(
+        self,
+        contexts: List[Dict[str, Any]],
+        mutation_log: List[Dict[str, Any]],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Run diagnostic analysis on contexts."""
+        from services.core import DebuggingAgent, ContextBundle, DiagnosticConfig
+
+        # Build config from payload
+        diag_config = DiagnosticConfig(
+            stale_threshold_seconds=config.get("stale_threshold_seconds", 3600),
+            detect_contradictions=config.get("detect_contradictions", True),
+            verbosity=config.get("verbosity", "normal")
+        )
+
+        agent = DebuggingAgent(config=diag_config)
+
+        # Create bundle from contexts
+        bundle = ContextBundle(contexts=contexts, mutation_log=mutation_log)
+
+        # Run diagnostics
+        result_bundle = await agent.invoke(bundle)
+
+        # Extract diagnostic context from result
+        diagnostic_ctx = None
+        for ctx in result_bundle.contexts:
+            if ctx.get("type") == "diagnostic":
+                diagnostic_ctx = ctx
+                break
+
+        if diagnostic_ctx:
+            return {
+                "status": "success",
+                "diagnostic": diagnostic_ctx.get("content", {}),
+                "report": agent.format_report(bundle)
+            }
+        else:
+            return {
+                "status": "error",
+                "error": "Failed to generate diagnostic context"
+            }
+
+
 # Handler registry for easy lookup
 AGENT_HANDLERS = {
     "index_agent": IndexHandler(),
     "test_agent": TestHandler(),
+    "reasoning_agent": ReasoningHandler(),
+    "critique_agent": CritiqueHandler(),
     "review_agent": ReviewHandler(),
     "refactor_agent": RefactorHandler(),
     "doc_agent": DocHandler(),
+    "debugging_agent": DebuggingHandler(),
 }
 
 

@@ -38,6 +38,7 @@ node_modules/
 # VS Code Extension build artifacts (keep source, ignore built files)
 vscode-extension/out/
 vscode-extension/*.vsix
+vscode-extension/.vscode-test/
 
 # Local data
 data/
@@ -47,3 +48,10 @@ data/
 # Redis
 dump.rdb
 
+# Security - secrets and certificates (never commit these!)
+secrets/
+certs/
+*.pem
+*.key
+*.crt
+*.pfx

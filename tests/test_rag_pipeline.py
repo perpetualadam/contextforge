@@ -100,6 +100,7 @@ class TestRAGPipeline:
 
         assert len(contexts) == 0
     
+    @patch('rag.ENABLE_WEB_SEARCH', True)
     @patch('rag.SearchAdapter')
     @patch('rag.LLMClient')
     def test_search_web_success(self, mock_llm_class, mock_search_class):

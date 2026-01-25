@@ -12,15 +12,23 @@ import json
 import re
 import shlex
 from typing import Dict, List, Optional, Any, AsyncGenerator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import OrderedDict
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import structlog
+
+# Import security modules (optional - graceful degradation if not available)
+try:
+    from services.security import get_audit_logger, AuditEventType
+    SECURITY_MODULES_AVAILABLE = True
+except ImportError:
+    SECURITY_MODULES_AVAILABLE = False
+    print("Security modules not available - running without audit logging")
 
 # Configure structured logging
 structlog.configure(
@@ -101,6 +109,22 @@ MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "10"))
 MAX_TIMEOUT_SECONDS = int(os.getenv("MAX_TIMEOUT_SECONDS", "300"))
 MIN_TIMEOUT_SECONDS = 1
 
+# Sandbox configuration - restrict command execution to specific directories
+ENABLE_SANDBOX = os.getenv("ENABLE_SANDBOX", "true").lower() in ("true", "1", "yes")
+SANDBOX_ALLOWED_PATHS = os.getenv("SANDBOX_ALLOWED_PATHS", "").split(",")
+# Default allowed paths if not configured
+if not SANDBOX_ALLOWED_PATHS or SANDBOX_ALLOWED_PATHS == ['']:
+    SANDBOX_ALLOWED_PATHS = [
+        os.getcwd(),  # Current working directory
+        "/workspace",  # Common workspace directory
+        "/app",  # Application directory
+        "/tmp",  # Temporary directory
+        str(Path.home()),  # User home directory
+    ]
+
+# Normalize and resolve sandbox paths
+SANDBOX_ALLOWED_PATHS = [str(Path(p).resolve()) for p in SANDBOX_ALLOWED_PATHS if p]
+
 
 def parse_command_safely(command: str) -> List[str]:
     """
@@ -130,6 +154,66 @@ def validate_command_args(args: List[str]) -> None:
                 raise ValueError(f"Command contains disallowed shell metacharacter: {char}")
 
 
+def validate_sandbox_path(working_dir: str) -> None:
+    """
+    Validate that the working directory is within allowed sandbox paths.
+    Prevents command execution in sensitive system directories.
+    """
+    if not ENABLE_SANDBOX:
+        return  # Sandbox disabled
+
+    if not working_dir:
+        return  # Will use current directory
+
+    # Resolve the path to prevent traversal attacks
+    resolved_path = Path(working_dir).resolve()
+
+    # Check if path is within any allowed sandbox path
+    for allowed_path in SANDBOX_ALLOWED_PATHS:
+        try:
+            # Check if working_dir is within allowed_path
+            resolved_path.relative_to(allowed_path)
+            return  # Path is valid
+        except ValueError:
+            # Not a subpath, continue checking
+            continue
+
+    # Path is not within any allowed sandbox path
+    raise ValueError(
+        f"Working directory '{working_dir}' is outside allowed sandbox paths. "
+        f"Allowed paths: {', '.join(SANDBOX_ALLOWED_PATHS)}"
+    )
+
+
+def log_command_execution(
+    command: str,
+    working_dir: str,
+    exit_code: int,
+    blocked: bool = False,
+    user_id: str = "system",
+    username: str = "terminal_executor",
+    client_ip: str = "127.0.0.1"
+) -> None:
+    """
+    Log command execution to audit logger if available.
+    """
+    if not SECURITY_MODULES_AVAILABLE:
+        return
+
+    try:
+        audit_logger = get_audit_logger()
+        audit_logger.log_command_execution(
+            user_id=user_id,
+            username=username,
+            command=command,
+            working_dir=working_dir,
+            exit_code=exit_code,
+            blocked=blocked
+        )
+    except Exception as e:
+        logger.warning("Failed to log command execution to audit logger", error=str(e))
+
+
 # Request/Response models
 class CommandRequest(BaseModel):
     command: str = Field(..., description="Command to execute", max_length=4096)
@@ -138,7 +222,8 @@ class CommandRequest(BaseModel):
     environment: Optional[Dict[str, str]] = Field(None, description="Environment variables")
     stream: bool = Field(False, description="Stream output in real-time")
 
-    @validator('command')
+    @field_validator('command')
+    @classmethod
     def validate_command(cls, v):
         if not v or not v.strip():
             raise ValueError("Command cannot be empty")
@@ -165,7 +250,8 @@ class CommandRequest(BaseModel):
 
         return v
 
-    @validator('working_directory')
+    @field_validator('working_directory')
+    @classmethod
     def validate_working_directory(cls, v):
         if v:
             # Prevent path traversal attacks
@@ -179,6 +265,9 @@ class CommandRequest(BaseModel):
                 raise ValueError(f"Working directory does not exist: {v}")
             if not path.is_dir():
                 raise ValueError(f"Working directory is not a directory: {v}")
+
+            # Validate sandbox path
+            validate_sandbox_path(v)
         return v
 
 class CommandResponse(BaseModel):
@@ -247,7 +336,7 @@ async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "service": "terminal-executor",
         "active_processes": len(active_processes)
     }
@@ -260,10 +349,24 @@ async def get_allowed_commands():
         "dangerous_patterns": DANGEROUS_PATTERNS
     }
 
+@app.get("/sandbox-config")
+async def get_sandbox_config():
+    """Get sandbox configuration."""
+    return {
+        "sandbox_enabled": ENABLE_SANDBOX,
+        "allowed_paths": SANDBOX_ALLOWED_PATHS,
+        "max_concurrent_processes": MAX_CONCURRENT_PROCESSES,
+        "max_timeout_seconds": MAX_TIMEOUT_SECONDS,
+        "security_modules_available": SECURITY_MODULES_AVAILABLE
+    }
+
 @app.post("/execute", response_model=CommandResponse)
-async def execute_command(request: CommandRequest):
+async def execute_command(request: CommandRequest, http_request: Request):
     """Execute a command and return the complete result."""
     logger.info("Executing command", command=request.command, working_dir=request.working_directory)
+
+    # Get client IP for audit logging
+    client_ip = http_request.client.host if http_request.client else "127.0.0.1"
 
     # Check concurrent process limit
     if len(active_processes) >= MAX_CONCURRENT_PROCESSES:
@@ -299,7 +402,7 @@ async def execute_command(request: CommandRequest):
             process_id=process.pid,
             command=request.command,
             status="running",
-            start_time=datetime.utcnow(),
+            start_time=datetime.now(timezone.utc),
             working_directory=working_dir
         )
         
@@ -316,7 +419,16 @@ async def execute_command(request: CommandRequest):
             active_processes.pop(process.pid, None)
             if process.pid in process_metadata:
                 process_metadata[process.pid].status = "completed" if process.returncode == 0 else "failed"
-            
+
+            # Log command execution to audit logger
+            log_command_execution(
+                command=request.command,
+                working_dir=working_dir,
+                exit_code=process.returncode,
+                blocked=False,
+                client_ip=client_ip
+            )
+
             response = CommandResponse(
                 command=request.command,
                 exit_code=process.returncode,
@@ -324,15 +436,15 @@ async def execute_command(request: CommandRequest):
                 stderr=stderr.decode('utf-8', errors='replace'),
                 execution_time=execution_time,
                 working_directory=working_dir,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 process_id=process.pid
             )
-            
-            logger.info("Command completed", 
-                       command=request.command, 
+
+            logger.info("Command completed",
+                       command=request.command,
                        exit_code=process.returncode,
                        execution_time=execution_time)
-            
+
             return response
             
         except asyncio.TimeoutError:
@@ -361,7 +473,14 @@ async def execute_command(request: CommandRequest):
         # Re-raise HTTP exceptions as-is
         raise
     except ValueError as e:
-        # Validation errors
+        # Validation errors - log as blocked command
+        log_command_execution(
+            command=request.command,
+            working_dir=request.working_directory or os.getcwd(),
+            exit_code=-1,
+            blocked=True,
+            client_ip=client_ip
+        )
         logger.warning("Command validation failed", command=request.command, error=str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -408,7 +527,7 @@ async def execute_command_stream(request: CommandRequest):
                 process_id=process.pid,
                 command=request.command,
                 status="running",
-                start_time=datetime.utcnow(),
+                start_time=datetime.now(timezone.utc),
                 working_directory=working_dir
             )
             
@@ -422,9 +541,9 @@ async def execute_command_stream(request: CommandRequest):
                     chunk = StreamChunk(
                         type=stream_type,
                         data=line.decode('utf-8', errors='replace'),
-                        timestamp=datetime.utcnow()
+                        timestamp=datetime.now(timezone.utc)
                     )
-                    yield f"data: {chunk.json()}\n\n"
+                    yield f"data: {chunk.model_dump_json()}\n\n"
             
             # Create tasks for both streams
             stdout_task = asyncio.create_task(
@@ -446,9 +565,9 @@ async def execute_command_stream(request: CommandRequest):
                         'exit_code': process.returncode,
                         'execution_time': execution_time
                     }),
-                    timestamp=datetime.utcnow()
+                    timestamp=datetime.now(timezone.utc)
                 )
-                yield f"data: {final_chunk.json()}\n\n"
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
                 
             except asyncio.TimeoutError:
                 # Kill process on timeout

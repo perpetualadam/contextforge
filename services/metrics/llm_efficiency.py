@@ -8,7 +8,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from collections import defaultdict
 from pydantic import BaseModel, Field
@@ -37,8 +37,8 @@ class LLMRequest(BaseModel):
     response_length: int = 0
     contained_code: bool = False
     contained_explanation: bool = False
-    
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict = Field(default_factory=dict)
 
 
@@ -99,7 +99,7 @@ class LLMEfficiencyTracker:
     
     def get_metrics(self, period_hours: int = 24) -> LLMEfficiencyMetrics:
         """Get efficiency metrics for a time period."""
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(hours=period_hours)
         
         requests = [r for r in self._requests if r.timestamp >= start_time]

@@ -741,6 +741,114 @@ class TestCritiqueAgent:
         assert agent.execution_hint == ExecutionHint.HYBRID
 
 
+class TestCoreReviewAgent:
+    """Test ReviewAgent implementation from services.core."""
+
+    def test_review_agent_creation(self):
+        """Test creating review agent."""
+        from services.core import ReviewAgent, ExecutionHint
+
+        agent = ReviewAgent()
+
+        assert agent.name == "review"
+        assert agent.execution_hint == ExecutionHint.HYBRID
+
+    def test_review_agent_capabilities(self):
+        """Test review agent capabilities."""
+        from services.core import ReviewAgent
+
+        agent = ReviewAgent()
+        caps = agent.capabilities()
+
+        assert "code_fragment" in caps.consumes
+        assert "file_path" in caps.consumes
+        assert "review" in caps.produces
+        assert caps.requires_filesystem is True
+        assert caps.requires_network is False
+
+
+class TestCoreDocAgent:
+    """Test DocAgent implementation from services.core."""
+
+    def test_doc_agent_creation(self):
+        """Test creating doc agent."""
+        from services.core import DocAgent, ExecutionHint
+
+        agent = DocAgent()
+
+        assert agent.name == "doc"
+        assert agent.execution_hint == ExecutionHint.HYBRID
+
+    def test_doc_agent_capabilities(self):
+        """Test doc agent capabilities."""
+        from services.core import DocAgent
+
+        agent = DocAgent()
+        caps = agent.capabilities()
+
+        assert "code_fragment" in caps.consumes
+        assert "file_path" in caps.consumes
+        assert "documentation" in caps.produces
+        assert "docstring" in caps.produces
+        assert caps.requires_filesystem is True
+        assert caps.requires_network is False
+
+
+class TestCoreRefactorAgent:
+    """Test RefactorAgent implementation from services.core."""
+
+    def test_refactor_agent_creation(self):
+        """Test creating refactor agent."""
+        from services.core import RefactorAgent, ExecutionHint
+
+        agent = RefactorAgent()
+
+        assert agent.name == "refactor"
+        assert agent.execution_hint == ExecutionHint.HYBRID
+
+    def test_refactor_agent_capabilities(self):
+        """Test refactor agent capabilities."""
+        from services.core import RefactorAgent
+
+        agent = RefactorAgent()
+        caps = agent.capabilities()
+
+        assert "code_fragment" in caps.consumes
+        assert "file_path" in caps.consumes
+        assert "file_tree" in caps.consumes
+        assert "refactoring_plan" in caps.produces
+        assert "code_changes" in caps.produces
+        assert caps.requires_filesystem is True
+        assert caps.requires_network is False
+        assert "source_files" in caps.mutation_rights
+
+
+class TestCoreTestingAgent:
+    """Test TestingAgent implementation from services.core."""
+
+    def test_testing_agent_creation(self):
+        """Test creating testing agent."""
+        from services.core import TestingAgent, ExecutionHint
+
+        agent = TestingAgent()
+
+        assert agent.name == "testing"
+        assert agent.execution_hint == ExecutionHint.LOCAL
+
+    def test_testing_agent_capabilities(self):
+        """Test testing agent capabilities."""
+        from services.core import TestingAgent
+
+        agent = TestingAgent()
+        caps = agent.capabilities()
+
+        assert "code_fragment" in caps.consumes
+        assert "file_path" in caps.consumes
+        assert "test_result" in caps.produces
+        assert caps.requires_filesystem is True
+        assert caps.requires_network is False
+
+
 class TestAgentRegistry:
     """Test global agent registry."""
 

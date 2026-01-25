@@ -10,11 +10,22 @@ faiss-cpu>=1.9.0
 sentence-transformers>=2.2.2
 numpy>=1.24.3
 
-# Language processing
+# Language processing - Tree-sitter AST parsing
 tree-sitter>=0.20.4
 tree-sitter-python>=0.20.4
 tree-sitter-javascript>=0.20.2
 tree-sitter-typescript>=0.20.2
+tree-sitter-java>=0.20.2
+tree-sitter-rust>=0.20.4
+tree-sitter-go>=0.20.0
+tree-sitter-cpp>=0.20.0
+tree-sitter-c-sharp>=0.20.0
+tree-sitter-ruby>=0.20.0
+tree-sitter-php>=0.20.0
+tree-sitter-kotlin>=0.3.0
+tree-sitter-julia>=0.20.0
+tree-sitter-html>=0.20.0
+tree-sitter-css>=0.20.0
 markdown>=3.5.1
 
 # Web scraping and search
@@ -45,6 +56,12 @@ psycopg2-binary>=2.9.9
 
 # Encryption
 cryptography>=42.0.0
+
+# Security - JWT and password hashing
+pyjwt>=2.8.0
+passlib[argon2]>=1.7.4
+argon2-cffi>=23.1.0
+bcrypt>=4.1.2
 
 # WebSocket support
 websockets>=12.0

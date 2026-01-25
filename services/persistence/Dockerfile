@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 RUN pip install --no-cache-dir \
     fastapi \
@@ -10,7 +13,7 @@ RUN pip install --no-cache-dir \
     psycopg2-binary
 
 # Copy application code
-COPY . .
+COPY services/persistence/ .
 
 # Expose port
 EXPOSE 8010

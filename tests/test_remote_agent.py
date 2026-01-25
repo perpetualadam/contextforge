@@ -1154,3 +1154,147 @@ class TestRedisBackend:
             mock_redis.hset.assert_called()
             mock_redis.zrem.assert_called()
 
+
+class TestAgentHandlers:
+    """Test agent handler registry and handlers."""
+
+    def test_handler_registry_contains_all_agents(self):
+        """Test that AGENT_HANDLERS contains all expected agents."""
+        from remote_agent.handlers import AGENT_HANDLERS
+
+        expected_handlers = [
+            "index_agent",
+            "test_agent",
+            "reasoning_agent",
+            "critique_agent",
+            "review_agent",
+            "refactor_agent",
+            "doc_agent",
+        ]
+
+        for handler_name in expected_handlers:
+            assert handler_name in AGENT_HANDLERS, f"Missing handler: {handler_name}"
+
+    def test_get_handler(self):
+        """Test get_handler function."""
+        from remote_agent.handlers import get_handler, AGENT_HANDLERS
+
+        for name in AGENT_HANDLERS:
+            handler = get_handler(name)
+            assert handler is not None
+            assert hasattr(handler, 'handle')
+
+    def test_get_handler_unknown(self):
+        """Test get_handler returns None for unknown handler."""
+        from remote_agent.handlers import get_handler
+
+        handler = get_handler("unknown_handler")
+        assert handler is None
+
+    def test_reasoning_handler_exists(self):
+        """Test ReasoningHandler is properly registered."""
+        from remote_agent.handlers import ReasoningHandler, AGENT_HANDLERS
+
+        assert "reasoning_agent" in AGENT_HANDLERS
+        assert isinstance(AGENT_HANDLERS["reasoning_agent"], ReasoningHandler)
+
+    def test_critique_handler_exists(self):
+        """Test CritiqueHandler is properly registered."""
+        from remote_agent.handlers import CritiqueHandler, AGENT_HANDLERS
+
+        assert "critique_agent" in AGENT_HANDLERS
+        assert isinstance(AGENT_HANDLERS["critique_agent"], CritiqueHandler)
+
+    @pytest.mark.asyncio
+    async def test_reasoning_handler_no_query(self):
+        """Test ReasoningHandler returns error when no query provided."""
+        from remote_agent.handlers import ReasoningHandler
+
+        handler = ReasoningHandler()
+        result = await handler.handle({})
+
+        assert "error" in result
+        assert "No query provided" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_critique_handler_no_content(self):
+        """Test CritiqueHandler returns error when no content provided."""
+        from remote_agent.handlers import CritiqueHandler
+
+        handler = CritiqueHandler()
+        result = await handler.handle({})
+
+        assert "error" in result
+        assert "No content to critique" in result["error"]
+
+    def test_debugging_handler_exists(self):
+        """Test DebuggingHandler is properly registered."""
+        from remote_agent.handlers import DebuggingHandler, AGENT_HANDLERS
+
+        assert "debugging_agent" in AGENT_HANDLERS
+        assert isinstance(AGENT_HANDLERS["debugging_agent"], DebuggingHandler)
+
+    @pytest.mark.asyncio
+    async def test_debugging_handler_no_contexts(self):
+        """Test DebuggingHandler returns error when no contexts provided."""
+        from remote_agent.handlers import DebuggingHandler
+
+        handler = DebuggingHandler()
+        result = await handler.handle({})
+
+        assert "error" in result
+        assert "No contexts provided" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_debugging_handler_with_contexts(self):
+        """Test DebuggingHandler runs diagnostics on contexts."""
+        from remote_agent.handlers import DebuggingHandler
+
+        handler = DebuggingHandler()
+        result = await handler.handle({
+            "contexts": [
+                {"type": "code", "provenance": "indexing", "content": "def foo(): pass"},
+                {"type": "analysis", "provenance": "reasoning", "content": "This is a function"}
+            ]
+        })
+
+        assert result.get("status") == "success"
+        assert "diagnostic" in result
+        assert "report" in result
+
+
+class TestDebuggingAgentRegistration:
+    """Test DebuggingAgent is properly registered in EnhancedOrchestrator."""
+
+    def test_debugging_agent_registered(self):
+        """Test DebuggingAgent is registered with coordinator."""
+        from services.core import EnhancedOrchestrator
+
+        orch = EnhancedOrchestrator(mode='offline')
+        agents = orch.coordinator._agents
+
+        assert "debugging" in agents
+        assert agents["debugging"].name == "debugging"
+
+    def test_all_agents_registered(self):
+        """Test all expected agents are registered."""
+        from services.core import EnhancedOrchestrator
+
+        orch = EnhancedOrchestrator(mode='offline')
+        agents = orch.coordinator._agents
+
+        expected_agents = [
+            "indexing",
+            "testing",
+            "debugging",
+            "critique",
+            "review",
+            "reasoning",
+            "doc",
+            "refactor",
+        ]
+
+        for agent_name in expected_agents:
+            assert agent_name in agents, f"Missing agent: {agent_name}"
+
+        assert len(agents) == len(expected_agents)

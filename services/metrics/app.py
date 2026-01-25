@@ -19,7 +19,7 @@ from .retrieval_accuracy import (
     RetrievalResult, RetrievalEvaluation, get_retrieval_tracker
 )
 from .test_correlation import (
-    TestResult, CodeChange, TestCorrelationResult, get_test_correlation_tracker
+    ExecutionResult, CodeChange, TestCorrelationResult, get_test_correlation_tracker
 )
 from .llm_efficiency import (
     LLMRequest, LLMEfficiencyMetrics, get_llm_efficiency_tracker
@@ -98,7 +98,7 @@ async def get_retrieval_evaluations(limit: int = Query(100, le=1000)):
 
 # Test Correlation Endpoints
 @app.post("/tests/record")
-async def record_test_result(result: TestResult):
+async def record_test_result(result: ExecutionResult):
     """Record a test result."""
     tracker = get_test_correlation_tracker()
     tracker.record_test_result(result)

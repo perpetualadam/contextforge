@@ -128,7 +128,9 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     }
 
     private async handleSendMessage(messageContent: string, attachments?: FileAttachment[]) {
-        if (!messageContent.trim() && (!attachments || attachments.length === 0)) return;
+        if (!messageContent.trim() && (!attachments || attachments.length === 0)) {
+            return;
+        }
 
         // Add user message
         const userMessage: ChatMessage = {
@@ -252,7 +254,9 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     }
 
     private loadChatHistory() {
-        if (!this._config.chatHistoryEnabled) return;
+        if (!this._config.chatHistoryEnabled) {
+            return;
+        }
 
         try {
             const workspaceState = vscode.workspace.getConfiguration('contextforge');
@@ -277,7 +281,9 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     }
 
     private saveChatHistory() {
-        if (!this._config.chatHistoryEnabled) return;
+        if (!this._config.chatHistoryEnabled) {
+            return;
+        }
 
         try {
             // Save only essential data to avoid storage bloat

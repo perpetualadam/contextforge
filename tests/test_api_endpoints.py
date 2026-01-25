@@ -4,15 +4,19 @@ Tests for API Gateway endpoints.
 
 import pytest
 import json
+import io
 from unittest.mock import Mock, patch, MagicMock
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter, PdfReader
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 
 # Import the modules to test
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'services', 'api_gateway'))
 
-from app import app
+from app import app, extract_text_from_pdf
 
 
 class TestAPIGatewayEndpoints:
@@ -480,6 +484,258 @@ class TestAPIErrorHandling:
         # For now, just test that the endpoint exists and responds
         response = self.client.get("/health")
         assert response.status_code == 200
+
+
+class TestPDFExtraction:
+    """Test PDF file upload and text extraction using pypdf."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.client = TestClient(app)
+
+    @staticmethod
+    def create_test_pdf(text_content: str) -> bytes:
+        """Create a simple PDF with text content for testing.
+
+        Args:
+            text_content: Text to include in the PDF
+
+        Returns:
+            PDF file content as bytes
+        """
+        # Create a PDF in memory using reportlab
+        buffer = io.BytesIO()
+        pdf_canvas = canvas.Canvas(buffer, pagesize=letter)
+
+        # Add text to the PDF
+        pdf_canvas.drawString(100, 750, text_content)
+        pdf_canvas.save()
+
+        # Get the PDF bytes
+        buffer.seek(0)
+        return buffer.read()
+
+    @staticmethod
+    def create_multi_page_pdf(pages_content: list) -> bytes:
+        """Create a multi-page PDF for testing.
+
+        Args:
+            pages_content: List of text strings, one per page
+
+        Returns:
+            PDF file content as bytes
+        """
+        buffer = io.BytesIO()
+        pdf_canvas = canvas.Canvas(buffer, pagesize=letter)
+
+        for page_text in pages_content:
+            pdf_canvas.drawString(100, 750, page_text)
+            pdf_canvas.showPage()
+
+        pdf_canvas.save()
+        buffer.seek(0)
+        return buffer.read()
+
+    def test_extract_text_from_pdf_simple(self):
+        """Test extracting text from a simple PDF."""
+        test_text = "Hello from PDF!"
+        pdf_content = self.create_test_pdf(test_text)
+
+        # Test the extraction function directly
+        extracted_text = extract_text_from_pdf(pdf_content)
+
+        assert extracted_text is not None
+        assert test_text in extracted_text
+
+    def test_extract_text_from_pdf_multi_page(self):
+        """Test extracting text from a multi-page PDF."""
+        pages = ["Page 1 content", "Page 2 content", "Page 3 content"]
+        pdf_content = self.create_multi_page_pdf(pages)
+
+        extracted_text = extract_text_from_pdf(pdf_content)
+
+        assert extracted_text is not None
+        # All pages should be extracted
+        for page_text in pages:
+            assert page_text in extracted_text
+
+    def test_extract_text_from_empty_pdf(self):
+        """Test extracting text from an empty PDF."""
+        # Create a PDF with no text
+        pdf_content = self.create_test_pdf("")
+
+        extracted_text = extract_text_from_pdf(pdf_content)
+
+        # Should return empty string or whitespace, not None
+        assert extracted_text is not None
+        assert isinstance(extracted_text, str)
+
+    def test_extract_text_from_invalid_pdf(self):
+        """Test extracting text from invalid PDF data."""
+        invalid_pdf = b"This is not a PDF file"
+
+        # Should handle gracefully and return empty string
+        extracted_text = extract_text_from_pdf(invalid_pdf)
+
+        assert extracted_text == ""
+
+    def test_extract_text_from_corrupted_pdf(self):
+        """Test extracting text from corrupted PDF data."""
+        # Create a valid PDF then corrupt it
+        valid_pdf = self.create_test_pdf("Test")
+        corrupted_pdf = valid_pdf[:100]  # Truncate it
+
+        # Should handle gracefully
+        extracted_text = extract_text_from_pdf(corrupted_pdf)
+
+        assert extracted_text == ""
+
+    @patch('app.verify_api_key')
+    def test_upload_pdf_file_success(self, mock_verify):
+        """Test uploading a PDF file through the API endpoint."""
+        mock_verify.return_value = None  # Skip API key verification
+
+        test_text = "This is a test PDF document for upload testing."
+        pdf_content = self.create_test_pdf(test_text)
+
+        # Upload the PDF
+        response = self.client.post(
+            "/files/upload",
+            files={"file": ("test.pdf", pdf_content, "application/pdf")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response structure
+        assert "id" in data
+        assert "name" in data
+        assert "type" in data
+        assert "size" in data
+        assert "extractedText" in data
+
+        # Verify file metadata
+        assert data["name"] == "test.pdf"
+        assert data["type"] == "application/pdf"
+        assert data["size"] == len(pdf_content)
+
+        # Verify text extraction worked
+        assert data["extractedText"] is not None
+        assert test_text in data["extractedText"]
+
+    @patch('app.verify_api_key')
+    def test_upload_multi_page_pdf(self, mock_verify):
+        """Test uploading a multi-page PDF file."""
+        mock_verify.return_value = None
+
+        pages = [
+            "First page with important information",
+            "Second page with more details",
+            "Third page with conclusions"
+        ]
+        pdf_content = self.create_multi_page_pdf(pages)
+
+        response = self.client.post(
+            "/files/upload",
+            files={"file": ("multipage.pdf", pdf_content, "application/pdf")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # All pages should be extracted
+        extracted = data["extractedText"]
+        for page_text in pages:
+            assert page_text in extracted
+
+    @patch('app.verify_api_key')
+    def test_upload_pdf_with_special_characters(self, mock_verify):
+        """Test uploading a PDF with special characters."""
+        mock_verify.return_value = None
+
+        special_text = "Special chars: @#$%^&*() 123 ABC"
+        pdf_content = self.create_test_pdf(special_text)
+
+        response = self.client.post(
+            "/files/upload",
+            files={"file": ("special.pdf", pdf_content, "application/pdf")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Special characters should be preserved
+        assert "Special chars" in data["extractedText"]
+
+    @patch('app.verify_api_key')
+    def test_upload_large_pdf(self, mock_verify):
+        """Test uploading a PDF with lots of text."""
+        mock_verify.return_value = None
+
+        # Create a PDF with multiple pages of text
+        pages = [f"Page {i} with content line {i}" for i in range(1, 11)]
+        pdf_content = self.create_multi_page_pdf(pages)
+
+        response = self.client.post(
+            "/files/upload",
+            files={"file": ("large.pdf", pdf_content, "application/pdf")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify all pages were extracted
+        extracted = data["extractedText"]
+        assert "Page 1" in extracted
+        assert "Page 10" in extracted
+
+    @patch('app.verify_api_key')
+    def test_upload_invalid_pdf_file(self, mock_verify):
+        """Test uploading an invalid PDF file."""
+        mock_verify.return_value = None
+
+        invalid_content = b"Not a real PDF file"
+
+        response = self.client.post(
+            "/files/upload",
+            files={"file": ("fake.pdf", invalid_content, "application/pdf")}
+        )
+
+        # Should still return 200 but with empty extracted text
+        assert response.status_code == 200
+        data = response.json()
+        assert data["extractedText"] == ""
+
+    def test_pypdf_library_import(self):
+        """Test that pypdf library is properly imported."""
+        # Verify we can import pypdf
+        from pypdf import PdfReader, PdfWriter
+
+        # Verify the extract function uses pypdf
+        test_pdf = self.create_test_pdf("Import test")
+
+        # This should work without errors
+        reader = PdfReader(io.BytesIO(test_pdf))
+        assert len(reader.pages) > 0
+
+    def test_pypdf_vs_pypdf2_compatibility(self):
+        """Test that pypdf works as a drop-in replacement for PyPDF2."""
+        # Create a test PDF
+        test_text = "Compatibility test"
+        pdf_content = self.create_test_pdf(test_text)
+
+        # Test using pypdf (new library)
+        reader = PdfReader(io.BytesIO(pdf_content))
+
+        # Verify the API is the same as PyPDF2
+        assert hasattr(reader, 'pages')  # Should have pages attribute
+        assert len(reader.pages) > 0
+
+        # Extract text using the same API
+        page = reader.pages[0]
+        text = page.extract_text()
+
+        assert test_text in text
 
 
 if __name__ == "__main__":
