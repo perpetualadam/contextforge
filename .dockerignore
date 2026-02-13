@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+venv
+.venv
+env
+
+# IDE
+.vscode
+.cursor
+.idea
+*.swp
+*.swo
+
+# Node / Frontend
+web-frontend/node_modules
+vscode-extension/node_modules
+node_modules
+
+# Data & cache
+data/
+*.db
+*.sqlite
+.pytest_cache
+.mypy_cache
+
+# Docker
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Docs & misc
+*.md
+LICENSE
+Makefile
+docs/
+examples/

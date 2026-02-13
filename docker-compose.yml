@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   api_gateway:
-    build: ./services/api_gateway
+    build:
+      context: .
+      dockerfile: ./services/api_gateway/Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -35,7 +37,9 @@ services:
       - contextforge
 
   vector-index:
-    build: ./services/vector_index
+    build:
+      context: .
+      dockerfile: ./services/vector_index/Dockerfile
     ports:
       - "8001:8001"
     environment:
@@ -57,7 +61,9 @@ services:
       - contextforge
 
   preprocessor:
-    build: ./services/preprocessor
+    build:
+      context: .
+      dockerfile: ./services/preprocessor/Dockerfile
     ports:
       - "8003:8003"
     environment:
@@ -72,7 +78,9 @@ services:
       - contextforge
 
   connector:
-    build: ./services/connector
+    build:
+      context: .
+      dockerfile: ./services/connector/Dockerfile
     ports:
       - "8002:8002"
     environment:
@@ -83,7 +91,9 @@ services:
       - contextforge
 
   web-fetcher:
-    build: ./services/web_fetcher
+    build:
+      context: .
+      dockerfile: ./services/web_fetcher/Dockerfile
     ports:
       - "8004:8004"
     environment:
@@ -94,7 +104,9 @@ services:
       - contextforge
 
   terminal-executor:
-    build: ./services/terminal_executor
+    build:
+      context: .
+      dockerfile: ./services/terminal_executor/Dockerfile
     ports:
       - "8006:8006"
     environment:
@@ -185,7 +197,9 @@ services:
 
   # Persistence Service
   persistence:
-    build: ./services/persistence
+    build:
+      context: .
+      dockerfile: ./services/persistence/Dockerfile
     ports:
       - "8015:8010"
     environment:
@@ -199,7 +213,9 @@ services:
 
   # Web Dashboard
   dashboard:
-    build: ./services/dashboard
+    build:
+      context: .
+      dockerfile: ./services/dashboard/Dockerfile
     ports:
       - "8016:8011"
     environment:
@@ -216,7 +232,9 @@ services:
 
   # Advanced Metrics Service
   metrics:
-    build: ./services/metrics
+    build:
+      context: .
+      dockerfile: ./services/metrics/Dockerfile
     ports:
       - "8017:8012"
     environment:

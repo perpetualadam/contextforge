@@ -261,83 +261,48 @@ class CritiqueHandler:
 
 
 class ReviewHandler:
-    """Handler for review agent tasks - static analysis + bug detection."""
-    
+    """
+    Handler for review agent tasks - static analysis + bug detection.
+
+    Delegates to the canonical core ReviewAgent, which implements the
+    ContextForge context engine.  This handler adapts the remote-agent
+    payload/response contract to the core agent's public API.
+    """
+
+    def __init__(self):
+        self._agent = None  # Lazy-loaded core ReviewAgent
+
+    def _get_agent(self):
+        if self._agent is None:
+            from services.core import ReviewAgent
+            self._agent = ReviewAgent()
+        return self._agent
+
     async def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Perform code review.
-        
+        Perform code review or bug detection.
+
         Payload:
             file_path: Path to file to review
             content: Optional code content
-            include_static_analysis: Run linters
-            focus: Review focus (general, security, performance)
+            include_static_analysis: Run linters (default True)
+            focus: Review focus - ``"security"`` triggers bug detection,
+                   anything else runs a general review.
         """
         file_path = payload.get("file_path", "")
         content = payload.get("content")
+        focus = payload.get("focus", "general")
         include_static = payload.get("include_static_analysis", True)
-        
-        return await self._review_file(file_path, content, include_static)
-    
-    async def _review_file(self, file_path: str, content: str = None,
-                           include_static: bool = True) -> Dict[str, Any]:
-        """Perform comprehensive code review."""
-        from services.prompt_enhancer import (
-            PromptBuilder, TaskType, ContextData, get_context_aggregator
+
+        agent = self._get_agent()
+
+        if focus == "security":
+            return await agent.detect_bugs(file_path, content=content)
+
+        return await agent.review_file(
+            file_path, content=content,
+            include_static_analysis=include_static
         )
-        from services.code_analysis import get_code_analyzer
-        
-        result = {
-            "file": file_path,
-            "static_analysis": [],
-            "issues": []
-        }
-        
-        if content is None and file_path:
-            try:
-                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
-            except Exception as e:
-                result["error"] = str(e)
-                return result
-        
-        # Run static analysis
-        if include_static:
-            analyzer = get_code_analyzer()
-            analysis_results = await analyzer.analyze_file(file_path)
-            result["static_analysis"] = [
-                {"analyzer": r.analyzer, "issues": len(r.issues), "summary": r.summary}
-                for r in analysis_results
-            ]
-            
-            for ar in analysis_results:
-                for issue in ar.issues:
-                    result["issues"].append({
-                        "rule": issue.rule,
-                        "message": issue.message,
-                        "line": issue.line,
-                        "severity": issue.severity.value,
-                        "analyzer": issue.analyzer
-                    })
-        
-        # Build context for LLM review
-        aggregator = get_context_aggregator()
-        context = await aggregator.gather_context(content[:500] if content else "", file_path)
-        context.lint_results = result["issues"]
-        
-        builder = PromptBuilder()
-        result["prompt"] = builder.build_prompt(
-            TaskType.CODE_REVIEW,
-            context,
-            code=content or "",
-            language=self._detect_language(file_path)
-        )
-        
-        return result
-    
-    def _detect_language(self, file_path: str) -> str:
-        ext_map = {".py": "python", ".js": "javascript", ".ts": "typescript",
-                   ".java": "java", ".go": "go", ".rs": "rust"}
-        return ext_map.get(Path(file_path).suffix.lower(), "text")
 
 
 class RefactorHandler:

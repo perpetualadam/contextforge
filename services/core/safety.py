@@ -7,6 +7,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
@@ -58,12 +59,12 @@ class FileConfidence:
 class OperationLimits:
     """Resource limits for an operation."""
     
-    max_tool_calls: int = 50
-    max_revisions: int = 10
-    max_tokens: int = 100000
-    max_files_per_operation: int = 20
-    max_loop_iterations: int = 5
-    timeout_seconds: float = 300.0
+    max_tool_calls: int = int(os.getenv("SAFETY_MAX_TOOL_CALLS", "50"))
+    max_revisions: int = int(os.getenv("SAFETY_MAX_REVISIONS", "10"))
+    max_tokens: int = int(os.getenv("SAFETY_MAX_TOKENS", "2000000"))
+    max_files_per_operation: int = int(os.getenv("SAFETY_MAX_FILES", "50"))
+    max_loop_iterations: int = int(os.getenv("SAFETY_MAX_LOOPS", "10"))
+    timeout_seconds: float = float(os.getenv("SAFETY_TIMEOUT", "600.0"))
 
 
 @dataclass

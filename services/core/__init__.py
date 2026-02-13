@@ -951,6 +951,15 @@ class ReviewAgent(AgentInterface):
     Combines static analysis tools with LLM review for comprehensive
     code quality feedback. Prefers local execution for static analysis
     but can leverage remote LLM for deeper review.
+
+    Supports two modes via bundle metadata ``mode``:
+    - ``"review"`` (default): General code review with static analysis
+      and LLM-powered suggestions.
+    - ``"bug_detection"``: Security-focused analysis targeting bugs,
+      vulnerabilities, and logic errors.
+
+    Can also be used directly (outside the context engine) via the
+    public ``review_file()`` and ``detect_bugs()`` methods.
     """
 
     def __init__(self):
@@ -962,14 +971,25 @@ class ReviewAgent(AgentInterface):
     def capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(
             consumes=["code_fragment", "file_path"],
-            produces=["review", "findings", "lint_results"],
+            produces=["review", "findings", "lint_results", "security_findings"],
             requires_filesystem=True,  # Needs file access for static analysis
             requires_network=False  # Can work offline
         )
 
+    # ------------------------------------------------------------------
+    # Context-engine entry point
+    # ------------------------------------------------------------------
+
     async def invoke(self, bundle: ContextBundle) -> ContextBundle:
-        """Perform code review on files in the bundle."""
+        """
+        Perform code review on files in the bundle.
+
+        Bundle metadata may include:
+        - ``mode``: ``"review"`` (default) or ``"bug_detection"``
+        """
         from pathlib import Path
+
+        mode = bundle.metadata.get("mode", "review")
 
         file_paths = [
             c.get("path") for c in bundle.contexts
@@ -977,60 +997,226 @@ class ReviewAgent(AgentInterface):
         ]
 
         if not file_paths:
-            # Check metadata for file path
             file_path = bundle.metadata.get("file_path")
             if file_path:
                 file_paths = [file_path]
 
-        review_results = []
-        for file_path in file_paths[:10]:  # Limit to 10 files
-            result = await self._review_file(file_path)
-            review_results.append(result)
+        if mode == "bug_detection":
+            results = []
+            for file_path in file_paths[:10]:
+                result = await self._detect_bugs_for_file(file_path)
+                results.append(result)
 
-        review = {
-            "type": "review",
-            "files_reviewed": len(review_results),
-            "results": review_results,
-            "provenance": self.name
-        }
+            review = {
+                "type": "security_findings",
+                "files_scanned": len(results),
+                "results": results,
+                "provenance": self.name
+            }
+        else:
+            results = []
+            for file_path in file_paths[:10]:
+                result = await self._review_file(file_path)
+                results.append(result)
+
+            review = {
+                "type": "review",
+                "files_reviewed": len(results),
+                "results": results,
+                "provenance": self.name
+            }
 
         return bundle.add_context(review, self.name)
 
-    async def _review_file(self, file_path: str) -> Dict[str, Any]:
-        """Review a single file."""
+    # ------------------------------------------------------------------
+    # Public direct-call API (used by API gateway / handlers)
+    # ------------------------------------------------------------------
+
+    async def review_file(self, file_path: str, content: str = None,
+                          include_static_analysis: bool = True) -> Dict[str, Any]:
+        """
+        Perform comprehensive code review on a file.
+
+        Args:
+            file_path: Path to the file.
+            content: Optional file content (read from disk if not provided).
+            include_static_analysis: Whether to run linters / type checkers.
+
+        Returns:
+            Review results dict with static analysis, issues, suggestions,
+            and an LLM review prompt.
+        """
+        result = await self._review_file(
+            file_path, content=content,
+            include_static_analysis=include_static_analysis
+        )
+        return result
+
+    async def detect_bugs(self, file_path: str,
+                          content: str = None) -> Dict[str, Any]:
+        """
+        Security-focused bug detection.
+
+        Runs security and linter analyzers, then builds a bug-detection
+        prompt suitable for LLM evaluation.
+
+        Args:
+            file_path: Path to the file.
+            content: Optional file content (read from disk if not provided).
+
+        Returns:
+            Dict with security findings and an LLM bug-detection prompt.
+        """
+        return await self._detect_bugs_for_file(file_path, content=content)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _review_file(self, file_path: str, *, content: str = None,
+                           include_static_analysis: bool = True) -> Dict[str, Any]:
+        """Review a single file with static analysis and prompt building."""
         from pathlib import Path
 
-        result = {"file": file_path, "issues": [], "static_analysis": []}
+        result: Dict[str, Any] = {
+            "file": file_path,
+            "static_analysis": [],
+            "issues": [],
+            "suggestions": [],
+        }
 
-        try:
-            content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
-        except Exception as e:
-            result["error"] = str(e)
-            return result
+        # Load content if not provided
+        if content is None:
+            try:
+                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
+            except Exception as e:
+                result["error"] = str(e)
+                return result
 
-        # Try static analysis if available
-        try:
-            from services.code_analysis import get_code_analyzer
-            analyzer = get_code_analyzer()
-            analysis_results = await analyzer.analyze_file(file_path)
-            for ar in analysis_results:
-                result["static_analysis"].append({
-                    "analyzer": ar.analyzer,
-                    "issues_count": len(ar.issues),
-                    "summary": ar.summary
-                })
-                for issue in ar.issues:
-                    result["issues"].append({
-                        "rule": issue.rule,
-                        "message": issue.message,
-                        "line": issue.line,
-                        "severity": issue.severity.value,
-                        "analyzer": issue.analyzer
+        # Run static analysis
+        if include_static_analysis:
+            try:
+                from services.code_analysis import get_code_analyzer
+                analyzer = get_code_analyzer()
+                analysis_results = await analyzer.analyze_file(file_path)
+                for ar in analysis_results:
+                    result["static_analysis"].append({
+                        "analyzer": ar.analyzer,
+                        "issues_count": len(ar.issues),
+                        "summary": ar.summary
                     })
+                    for issue in ar.issues:
+                        result["issues"].append({
+                            "rule": issue.rule,
+                            "message": issue.message,
+                            "line": issue.line,
+                            "severity": issue.severity.value,
+                            "analyzer": issue.analyzer
+                        })
+            except Exception as e:
+                logger.debug(f"Static analysis not available: {e}")
+
+        # Build LLM review prompt
+        try:
+            from services.prompt_enhancer import (
+                PromptBuilder, TaskType, get_context_aggregator
+            )
+
+            aggregator = get_context_aggregator()
+            ctx = await aggregator.gather_context(
+                content[:500] if content else "", file_path
+            )
+            ctx.lint_results = result["issues"]
+
+            builder = PromptBuilder()
+            result["prompt"] = builder.build_prompt(
+                TaskType.CODE_REVIEW,
+                ctx,
+                code=content,
+                language=self._detect_language(file_path)
+            )
         except Exception as e:
-            logger.debug(f"Static analysis not available: {e}")
+            logger.debug(f"Prompt building not available: {e}")
 
         return result
+
+    async def _detect_bugs_for_file(self, file_path: str, *,
+                                    content: str = None) -> Dict[str, Any]:
+        """Security-focused analysis for a single file."""
+        from pathlib import Path
+
+        if content is None:
+            try:
+                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
+            except Exception as e:
+                return {"file": file_path, "security_findings": [], "error": str(e)}
+
+        security_findings: list = []
+
+        # Run security + linter analyzers
+        try:
+            from services.code_analysis import get_code_analyzer, AnalyzerType
+
+            analyzer = get_code_analyzer()
+            results = await analyzer.analyze_file(
+                file_path,
+                analyzer_types=[AnalyzerType.SECURITY, AnalyzerType.LINTER]
+            )
+
+            for r in results:
+                for issue in r.issues:
+                    security_findings.append({
+                        "rule": issue.rule,
+                        "message": issue.message,
+                        "severity": issue.severity.value,
+                        "location": f"{file_path}:{issue.line}"
+                    })
+        except Exception as e:
+            logger.debug(f"Security analysis not available: {e}")
+
+        # Build bug-detection prompt
+        prompt = None
+        try:
+            from services.prompt_enhancer import (
+                PromptBuilder, TaskType, ContextData
+            )
+
+            ctx = ContextData()
+            ctx.security_findings = security_findings
+
+            builder = PromptBuilder()
+            prompt = builder.build_prompt(
+                TaskType.BUG_DETECTION,
+                ctx,
+                code=content,
+                language=self._detect_language(file_path)
+            )
+        except Exception as e:
+            logger.debug(f"Bug-detection prompt building not available: {e}")
+
+        return {
+            "file": file_path,
+            "security_findings": security_findings,
+            "prompt": prompt
+        }
+
+    @staticmethod
+    def _detect_language(file_path: str) -> str:
+        """Detect programming language from file extension."""
+        from pathlib import Path
+        ext_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".java": "java",
+            ".go": "go",
+            ".rs": "rust",
+            ".rb": "ruby",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".cs": "csharp",
+        }
+        return ext_map.get(Path(file_path).suffix.lower(), "text")
 
 
 class DocAgent(AgentInterface):

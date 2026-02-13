@@ -7,10 +7,14 @@ A complete local-first context engine and AI assistant pipeline for intelligent 
 - **Local-First Architecture**: Privacy-focused design with optional remote LLM support
 - **Multi-Language Support**: 15+ languages with tree-sitter AST-based and regex chunking
   - **Tree-sitter support**: Python, JavaScript, TypeScript, Java, Rust, Go, C/C++, C#, Ruby, PHP, Kotlin, Julia, HTML, CSS
-  - **Hybrid chunking**: Automatic selection between tree-sitter (incremental) and regex (batch) modes
+  - **AST-aware chunking by default**: Functions, classes, methods, and imports extracted as semantic units (not fixed-size splits)
+  - **Relationship extraction**: Import, call, inheritance, and containment edges extracted during chunking
   - **Regex fallback**: Additional languages including Swift, R, Scala, Lua, Perl, Shell
 - **Vector Search**: FAISS-powered semantic search with hybrid retrieval (dense + lexical)
-  - **Dual embeddings**: all-mpnet-base-v2 (general) + CodeBERT (code-specific)
+  - **Model-agnostic embeddings**: Swap any sentence-transformers model via env vars (default: all-mpnet-base-v2 + CodeRankEmbed)
+  - **Query/document prefixes**: Supports asymmetric models (CodeRankEmbed, Nomic, Jina, etc.)
+  - **Code Graph**: Relationship-aware retrieval — tracks imports, calls, inheritance, containment alongside embeddings
+  - **Task-scoped retrieval**: Different search strategies per task (find_bugs, explain, refactor, test)
   - **HNSW indexing**: Optimized for large datasets (100k+ vectors)
   - **Recency boosting**: Prioritize recently modified code
 - **Multi-LLM Backend**: 8 providers with intelligent fallback
@@ -330,6 +334,20 @@ curl -X POST "http://localhost:8080/query" \
   -d '{"query": "authentication implementation", "max_tokens": 512}'
 ```
 
+#### Query with Task-Scoped Retrieval
+
+```bash
+# "find_bugs" scope prioritizes function bodies, follows CALLS/IMPORTS edges
+curl -X POST "http://localhost:8080/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "potential null pointer issues", "task_scope": "find_bugs"}'
+
+# "explain" scope expands to parent classes and documentation
+curl -X POST "http://localhost:8080/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "how does the auth middleware work?", "task_scope": "explain"}'
+```
+
 #### Query with Auto-Terminal Execution
 
 ```bash
@@ -541,8 +559,8 @@ curl -X POST "http://localhost:8080/terminal/execute-stream" \
 
 ### Data Flow
 
-1. **Ingestion**: Connector → Preprocessor → Vector Index
-2. **Query**: API Gateway → Vector Index + Web Fetcher → LLM → Response
+1. **Ingestion**: Connector → Preprocessor (AST chunking + relationship extraction) → Vector Index (FAISS embeddings + Code Graph)
+2. **Query**: API Gateway → Vector Index (hybrid search + task-scope boost + graph expansion) + Web Fetcher → LLM → Response
 3. **Terminal Execution**: API Gateway → Terminal Executor → Command Execution → Response
 4. **Command Suggestions**: API Gateway → LLM → Terminal Command Suggestions
 5. **VS Code**: Extension → API Gateway → Services → Response → Webview
@@ -654,6 +672,7 @@ code --install-extension contextforge-1.0.0.vsix
 ### Core Documentation
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and components
 - **[API Reference](docs/API_REFERENCE.md)**: Complete API documentation
+- **[Retrieval Configuration](docs/RETRIEVAL_CONFIGURATION.md)**: Embedding models, code graph, task scopes, and scalability
 - **[VS Code Extension](vscode-extension/README.md)**: Extension usage guide
 - **[Data Privacy](DATA_PRIVACY.md)**: Privacy and security details
 
@@ -687,10 +706,12 @@ contextforge/
 
 ### Adding New Features
 
-1. **New Language Support**: Extend `lang_chunkers.py`
+1. **New Language Support**: Extend `lang_chunkers.py` (tree-sitter is auto-detected for supported languages)
 2. **New LLM Provider**: Add adapter to `llm_client.py`
-3. **New Search Provider**: Extend `search_adapter.py`
-4. **New Endpoints**: Add to `api_gateway/app.py`
+3. **New Embedding Model**: Set `EMBEDDING_MODEL` / `CODE_EMBEDDING_MODEL` env var (any sentence-transformers model)
+4. **New Search Provider**: Extend `search_adapter.py`
+5. **New Task Scope**: Add to `services/vector_index/task_scopes.py`
+6. **New Endpoints**: Add to `api_gateway/app.py`
 
 ### Contributing
 
@@ -715,8 +736,10 @@ contextforge/
 
 See `.env.example` for complete configuration options:
 
-- **LLM Configuration**: `LLM_PRIORITY`, API keys
+- **LLM Configuration**: `LLM_PRIORITY`, API keys, `LLM_TIMEOUT` (default 300s)
+- **Embedding Models**: `EMBEDDING_MODEL`, `CODE_EMBEDDING_MODEL`, `QUERY_PREFIX`, `DOCUMENT_PREFIX`
 - **Search Configuration**: `ENABLE_WEB_SEARCH`, search API keys
+- **Scalability Limits**: `MAX_OUTPUT_TOKENS` (default 128k), `MAX_PROMPT_LENGTH` (default 2M chars), `LLM_REQUEST_TIMEOUT`
 - **Privacy Settings**: `PRIVACY_MODE`
 - **Service URLs**: Individual service endpoints
 - **Logging**: `LOG_LEVEL`, `LOG_FORMAT`
@@ -760,6 +783,7 @@ Configure auto-terminal execution in VS Code settings:
 
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and component overview
 - **[API Reference](docs/API_REFERENCE.md)**: Complete API endpoint documentation
+- **[Retrieval Configuration](docs/RETRIEVAL_CONFIGURATION.md)**: Embedding models, code graph, task scopes, scalability limits
 - **[Remote Agent Architecture](docs/REMOTE_AGENT_ARCHITECTURE.md)**: Distributed agent system design (planned feature)
 
 ### Remote Agent Support (Planned)

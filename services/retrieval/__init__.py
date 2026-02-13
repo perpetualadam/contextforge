@@ -11,6 +11,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
@@ -50,7 +51,7 @@ class RetrievalRequest:
     ])
     include_tests: bool = False
     include_git_history: bool = False
-    max_context_tokens: int = 4096
+    max_context_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", "32768"))
     filters: Dict[str, Any] = field(default_factory=dict)
 
 

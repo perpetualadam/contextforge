@@ -45,14 +45,16 @@ Main question answering endpoint using RAG pipeline.
   "query": "How does authentication work in this codebase?",
   "max_tokens": 512,
   "top_k": 5,
+  "task_scope": "explain",
   "enable_web_search": true
 }
 ```
 
 **Parameters:**
-- `query` (string, required): The question to answer
-- `max_tokens` (integer, optional): Maximum tokens for LLM response (default: 512, max: 4096)
-- `top_k` (integer, optional): Number of context chunks to retrieve (default: 5, max: 20)
+- `query` (string, required): The question to answer (max length configurable via `MAX_QUERY_LENGTH`, default 100k chars)
+- `max_tokens` (integer, optional): Maximum tokens for LLM response (default: 512, max configurable via `MAX_OUTPUT_TOKENS`, default 128k)
+- `top_k` (integer, optional): Number of context chunks to retrieve (default: 10, max: 100)
+- `task_scope` (string, optional): Task scope for retrieval tuning — `find_bugs`, `explain`, `refactor`, `test`, or `general` (default: null/general)
 - `enable_web_search` (boolean, optional): Enable web search for additional context (default: true)
 
 **Response:**
@@ -137,30 +139,56 @@ Ingest a local repository into the vector index.
 ### Vector Search
 
 #### POST /search/vector
-Direct vector similarity search.
+Direct vector similarity search with optional task-scoped retrieval and code graph expansion.
 
 **Request Body:**
 ```json
 {
   "query": "authentication function",
-  "top_k": 10
+  "top_k": 10,
+  "task_scope": "find_bugs",
+  "expand_graph": true,
+  "graph_depth": 1,
+  "graph_edge_types": ["CALLS", "IMPORTS"]
 }
 ```
 
+**Parameters:**
+- `query` (string, required): Search query
+- `top_k` (integer, optional): Number of results (default: 10)
+- `task_scope` (string, optional): Retrieval scope — `find_bugs`, `explain`, `refactor`, `test`, `general`
+- `expand_graph` (boolean, optional): Expand results with code graph neighbours (default: false)
+- `graph_depth` (integer, optional): Graph traversal depth (default: 1)
+- `graph_edge_types` (list[string], optional): Edge types to follow — `IMPORTS`, `CALLS`, `INHERITS`, `CONTAINS`
+
 **Response:**
 ```json
-[
-  {
-    "text": "def authenticate_user(username, password):",
-    "score": 0.95,
-    "meta": {
-      "source": "auth.py",
-      "chunk_type": "function",
-      "start_line": 10
-    },
-    "rank": 1
-  }
-]
+{
+  "query": "authentication function",
+  "results": [
+    {
+      "text": "def authenticate_user(username, password):",
+      "score": 0.95,
+      "chunk_id": "auth.py#3#a1b2c3d4",
+      "meta": {
+        "file_path": "auth.py",
+        "chunk_type": "function",
+        "symbol_name": "authenticate_user",
+        "start_line": 10,
+        "relationships": [
+          {"type": "CALLS", "target": "hash_password"},
+          {"type": "IMPORTS", "target": "hashlib"}
+        ]
+      },
+      "content_type": "code",
+      "rank": 1
+    }
+  ],
+  "search_type": "hybrid",
+  "graph_expanded": true,
+  "task_scope": "find_bugs",
+  "total_results": 10
+}
 ```
 
 ### Web Search
@@ -411,6 +439,29 @@ curl -X POST "http://localhost:8080/search/vector" \
   }'
 ```
 
+### Task-Scoped Bug Detection Query
+```bash
+curl -X POST "http://localhost:8080/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "potential SQL injection vulnerabilities",
+    "task_scope": "find_bugs"
+  }'
+```
+
+### Graph-Expanded Search
+```bash
+curl -X POST "http://localhost:8080/search/vector" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "UserService",
+    "top_k": 5,
+    "expand_graph": true,
+    "graph_depth": 2,
+    "graph_edge_types": ["CALLS", "INHERITS", "CONTAINS"]
+  }'
+```
+
 ### Health Check
 ```bash
 curl "http://localhost:8080/health"
@@ -422,12 +473,13 @@ curl "http://localhost:8080/health"
 ```python
 import requests
 
-# Query the system
+# Query the system with task-scoped retrieval
 response = requests.post(
     "http://localhost:8080/query",
     json={
         "query": "How does authentication work?",
-        "max_tokens": 512
+        "max_tokens": 512,
+        "task_scope": "explain"
     }
 )
 result = response.json()

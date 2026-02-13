@@ -101,6 +101,7 @@ class ProcessRequest(BaseModel):
     include_module_context: bool = True  # Include module/file-level context
     extract_symbols: bool = True  # Extract function/class names as metadata
     tag_content_type: bool = True  # Tag chunks as test/config/doc/code
+    use_tree_sitter: bool = True  # Prefer AST-aware tree-sitter chunking when available
 
 
 class ChunkRequest(BaseModel):
@@ -111,6 +112,7 @@ class ChunkRequest(BaseModel):
     include_module_context: bool = True
     extract_symbols: bool = True
     tag_content_type: bool = True
+    use_tree_sitter: bool = True  # Prefer AST-aware tree-sitter chunking when available
 
 
 class SmartChunkConfig(BaseModel):
@@ -256,7 +258,8 @@ async def process_files(request: ProcessRequest):
                 "overlap": request.overlap,
                 "include_module_context": request.include_module_context,
                 "extract_symbols": request.extract_symbols,
-                "tag_content_type": request.tag_content_type
+                "tag_content_type": request.tag_content_type,
+                "use_tree_sitter": request.use_tree_sitter
             }
         }
 
@@ -268,9 +271,10 @@ async def process_files(request: ProcessRequest):
                 # Extract module-level context
                 module_context = _extract_module_context(file_data.path, file_data.content)
 
-                # Get appropriate chunker
+                # Get appropriate chunker (tree-sitter preferred when available)
                 chunker = ChunkerFactory.get_chunker(
                     file_data.path,
+                    use_tree_sitter=request.use_tree_sitter,
                     max_chunk_size=request.max_chunk_size,
                     overlap=request.overlap
                 )
@@ -343,9 +347,10 @@ async def chunk_single_file(request: ChunkRequest):
         # Extract module-level context
         module_context = _extract_module_context(request.file_path, request.content)
 
-        # Get appropriate chunker
+        # Get appropriate chunker (tree-sitter preferred when available)
         chunker = ChunkerFactory.get_chunker(
             request.file_path,
+            use_tree_sitter=request.use_tree_sitter,
             max_chunk_size=request.max_chunk_size,
             overlap=request.overlap
         )

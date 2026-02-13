@@ -2,9 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
+# Copy and install service-specific requirements (no ML bloat)
+COPY services/remote_agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy shared modules needed by remote-agent
+COPY services/__init__.py /app/services/__init__.py
+COPY services/utils /app/services/utils
 
 # Copy service code
 COPY services/remote_agent /app/remote_agent

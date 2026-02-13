@@ -56,6 +56,9 @@ try:
 except ImportError:
     REMOTE_AGENTS_ENABLED = False
 
+# Early logger for import-time warnings
+_early_logger = logging.getLogger(__name__)
+
 # Import security modules
 try:
     from services.security import (
@@ -71,7 +74,7 @@ try:
     SECURITY_MODULES_ENABLED = True
 except ImportError:
     SECURITY_MODULES_ENABLED = False
-    logger.warning("Security modules not available - running without enhanced security")
+    _early_logger.warning("Security modules not available - running without enhanced security")
 
 # Configure structured logging
 structlog.configure(
@@ -124,6 +127,19 @@ else:
 API_KEY_ENABLED = os.getenv("API_KEY_ENABLED", "false").lower() == "true"
 API_KEYS = set(os.getenv("API_KEYS", "").split(",")) if os.getenv("API_KEYS") else set()
 RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+
+# --- Scalable LLM / request limits -------------------------------------------
+# These govern Pydantic validation bounds and HTTP timeouts.  Override via env
+# vars to accommodate larger models with bigger context windows.
+MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "100000"))           # chars
+MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "2000000"))        # chars (~500k tokens)
+MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "500000"))       # chars
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "131072"))         # 128k tokens
+DEFAULT_OUTPUT_TOKENS = int(os.getenv("DEFAULT_OUTPUT_TOKENS", "512"))
+LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "300"))       # seconds
+INGEST_PREPROCESS_TIMEOUT = int(os.getenv("INGEST_PREPROCESS_TIMEOUT", "300"))
+INGEST_INDEX_TIMEOUT = int(os.getenv("INGEST_INDEX_TIMEOUT", "600"))
+SERVICE_REQUEST_TIMEOUT = int(os.getenv("SERVICE_REQUEST_TIMEOUT", "60")) # general svc calls
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))  # max file upload size
 
 # Security utilities
@@ -227,8 +243,14 @@ async def check_rate_limit(request: Request) -> None:
 
 
 # Initialize Event Bus (Phase 1 integration)
-from services.core.event_bus import get_event_bus, Event, EventType
-event_bus = get_event_bus()
+try:
+    from services.core.event_bus import get_event_bus, Event, EventType
+    event_bus = get_event_bus()
+    EVENT_BUS_ENABLED = True
+except ImportError:
+    event_bus = None
+    EVENT_BUS_ENABLED = False
+    _early_logger.warning("Event bus not available - running without event bus integration")
 
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
@@ -239,18 +261,22 @@ rag_pipeline = RAGPipeline()
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
     # Startup
-    from services.startup_validator import validate_startup
-    if not validate_startup():
-        logger.error("Startup validation failed - some checks did not pass")
-        logger.warning("Continuing with startup despite validation warnings")
+    try:
+        from services.startup_validator import validate_startup
+        if not validate_startup():
+            logger.error("Startup validation failed - some checks did not pass")
+            logger.warning("Continuing with startup despite validation warnings")
+    except ImportError:
+        logger.warning("Startup validator not available - skipping validation")
 
     # Publish SERVICE_STARTED event
-    await event_bus.publish(Event(
-        type=EventType.SERVICE_STARTED,
-        payload={"service": "api_gateway"},
-        source="api_gateway"
-    ))
-    logger.info("API Gateway started and event published")
+    if event_bus is not None:
+        await event_bus.publish(Event(
+            type=EventType.SERVICE_STARTED,
+            payload={"service": "api_gateway"},
+            source="api_gateway"
+        ))
+    logger.info("API Gateway started")
 
     yield
 
@@ -326,10 +352,11 @@ class IngestRequest(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=10000)
-    max_tokens: int = Field(512, ge=1, le=4096)
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    max_tokens: int = Field(DEFAULT_OUTPUT_TOKENS, ge=1, le=MAX_OUTPUT_TOKENS)
     enable_web_search: Optional[bool] = None
     top_k: int = Field(10, ge=1, le=100)
+    task_scope: Optional[str] = Field(None, description="Task scope for retrieval: find_bugs, explain, refactor, test, general")
     auto_terminal_mode: bool = False
     auto_terminal_timeout: int = Field(30, ge=1, le=300)
     auto_terminal_whitelist: Optional[List[str]] = Field(None, max_length=50)
@@ -343,9 +370,9 @@ class SearchRequest(BaseModel):
 
 
 class LLMRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=100000)
-    model: Optional[str] = Field(None, max_length=100)
-    max_tokens: int = Field(512, ge=1, le=4096)
+    prompt: str = Field(..., min_length=1, max_length=MAX_PROMPT_LENGTH)
+    model: Optional[str] = Field(None, max_length=200)
+    max_tokens: int = Field(DEFAULT_OUTPUT_TOKENS, ge=1, le=MAX_OUTPUT_TOKENS)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     provider: Optional[str] = Field(None, max_length=50, description="Specific LLM provider to use (e.g., 'openai', 'anthropic', 'ollama')")
 
@@ -366,8 +393,8 @@ class TerminalRequest(BaseModel):
 
 
 class CommandSuggestionRequest(BaseModel):
-    task_description: str = Field(..., min_length=1, max_length=5000)
-    context: Optional[str] = Field(None, max_length=10000)
+    task_description: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    context: Optional[str] = Field(None, max_length=MAX_CONTEXT_LENGTH)
     working_directory: Optional[str] = Field(None, max_length=1024)
 
 
@@ -378,7 +405,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
-    max_tokens: int = 1024
+    max_tokens: int = Field(1024, ge=1, le=MAX_OUTPUT_TOKENS)
     enable_web_search: bool = False
     enable_context: bool = True
     provider: Optional[str] = Field(None, max_length=50, description="Specific LLM provider to use (e.g., 'openai', 'anthropic', 'ollama')")
@@ -531,7 +558,7 @@ async def ingest_repository(
                 "file_patterns": request.file_patterns,
                 "exclude_patterns": request.exclude_patterns
             },
-            timeout=30
+            timeout=SERVICE_REQUEST_TIMEOUT
         )
         connector_response.raise_for_status()
         files_data = connector_response.json()
@@ -542,7 +569,7 @@ async def ingest_repository(
         preprocessor_response = requests.post(
             f"{PREPROCESSOR_URL}/process",
             json={"files": files_data["files"]},
-            timeout=60
+            timeout=INGEST_PREPROCESS_TIMEOUT
         )
         preprocessor_response.raise_for_status()
         chunks_data = preprocessor_response.json()
@@ -553,7 +580,7 @@ async def ingest_repository(
         index_response = requests.post(
             f"{VECTOR_INDEX_URL}/index/insert",
             json={"chunks": chunks_data["chunks"]},
-            timeout=120
+            timeout=INGEST_INDEX_TIMEOUT
         )
         index_response.raise_for_status()
         index_data = index_response.json()
@@ -606,7 +633,7 @@ async def ingest_repository(
 async def get_ingestion_status():
     """Get status of ingested repositories."""
     try:
-        response = requests.get(f"{VECTOR_INDEX_URL}/index/stats", timeout=10)
+        response = requests.get(f"{VECTOR_INDEX_URL}/index/stats", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -868,7 +895,8 @@ async def query_context(
         response = rag_pipeline.answer_question(
             question=request.query,
             enable_web_search=request.enable_web_search,
-            max_tokens=request.max_tokens
+            max_tokens=request.max_tokens,
+            task_scope=request.task_scope,
         )
 
         # Auto-terminal execution if enabled
@@ -976,7 +1004,7 @@ async def search_vector_index(query: str, top_k: int = 10):
         response = requests.post(
             f"{VECTOR_INDEX_URL}/search",
             json={"query": query, "top_k": top_k},
-            timeout=10
+            timeout=SERVICE_REQUEST_TIMEOUT
         )
         response.raise_for_status()
         return response.json()
@@ -1613,7 +1641,7 @@ def _try_vit_analysis(image, basic_info: str) -> str:
 async def clear_index():
     """Clear the vector index."""
     try:
-        response = requests.delete(f"{VECTOR_INDEX_URL}/index/clear", timeout=30)
+        response = requests.delete(f"{VECTOR_INDEX_URL}/index/clear", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -1625,7 +1653,7 @@ async def clear_index():
 async def get_index_stats():
     """Get vector index statistics."""
     try:
-        response = requests.get(f"{VECTOR_INDEX_URL}/index/stats", timeout=10)
+        response = requests.get(f"{VECTOR_INDEX_URL}/index/stats", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -1818,7 +1846,7 @@ Example format:
 async def get_allowed_commands():
     """Get list of allowed terminal commands."""
     try:
-        response = requests.get(f"{TERMINAL_EXECUTOR_URL}/allowed-commands", timeout=10)
+        response = requests.get(f"{TERMINAL_EXECUTOR_URL}/allowed-commands", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -1830,7 +1858,7 @@ async def get_allowed_commands():
 async def get_active_processes():
     """Get list of active terminal processes."""
     try:
-        response = requests.get(f"{TERMINAL_EXECUTOR_URL}/processes", timeout=10)
+        response = requests.get(f"{TERMINAL_EXECUTOR_URL}/processes", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -1842,7 +1870,7 @@ async def get_active_processes():
 async def kill_process(process_id: int):
     """Kill an active terminal process."""
     try:
-        response = requests.delete(f"{TERMINAL_EXECUTOR_URL}/processes/{process_id}", timeout=10)
+        response = requests.delete(f"{TERMINAL_EXECUTOR_URL}/processes/{process_id}", timeout=SERVICE_REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -1970,7 +1998,7 @@ class PromptEnhanceRequest(BaseModel):
     include_embeddings: bool = Field(True, description="Include semantic embeddings")
     include_git: bool = Field(True, description="Include git history")
     include_tests: bool = Field(True, description="Include test results")
-    max_tokens: int = Field(4096, description="Max tokens for enhanced prompt")
+    max_tokens: int = Field(4096, ge=1, le=MAX_OUTPUT_TOKENS, description="Max tokens for enhanced prompt")
 
 
 class PromptEnhanceResponse(BaseModel):
@@ -2132,12 +2160,12 @@ async def ai_code_review(request: CodeReviewRequest):
     Combines static analysis with LLM-powered review suggestions.
     """
     try:
-        from services.orchestrator import get_review_agent
+        from services.core import ReviewAgent
 
         if not request.file_path and not request.content:
             raise HTTPException(status_code=400, detail="Either file_path or content required")
 
-        agent = get_review_agent()
+        agent = ReviewAgent()
 
         if request.file_path:
             result = await agent.review_file(
@@ -2175,15 +2203,15 @@ async def detect_bugs(request: CodeReviewRequest):
     Focuses on finding potential bugs, security issues, and logic errors.
     """
     try:
-        from services.orchestrator import get_review_agent
+        from services.core import ReviewAgent
 
         if not request.file_path and not request.content:
             raise HTTPException(status_code=400, detail="Either file_path or content required")
 
-        agent = get_review_agent()
+        agent = ReviewAgent()
 
         if request.file_path:
-            result = await agent.detect_bugs(request.file_path, request.content)
+            result = await agent.detect_bugs(request.file_path, content=request.content)
         else:
             import tempfile
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:

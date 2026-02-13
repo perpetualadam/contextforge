@@ -20,6 +20,8 @@ from .models import (
     TaskInfo, TaskStatus, HeartbeatRequest
 )
 
+logger = logging.getLogger(__name__)
+
 # Import multi-mode agent
 try:
     from .multi_mode_worker import RemoteMultiModeAgent, AgentMode
@@ -27,8 +29,6 @@ try:
 except ImportError:
     logger.warning("Multi-mode agent not available, using legacy handlers")
     MULTI_MODE_ENABLED = False
-
-logger = logging.getLogger(__name__)
 
 
 class AgentWorker:

@@ -54,7 +54,7 @@ class EvaluateRetrievalRequest(BaseModel):
 
 class CorrelateTestsRequest(BaseModel):
     change: CodeChange
-    test_results: List[TestResult]
+    test_results: List[ExecutionResult]
 
 
 class RecordLLMRequest(BaseModel):

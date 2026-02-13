@@ -7,9 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
+# Copy and install service-specific requirements (no ML bloat)
+COPY services/mcp_server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy shared modules needed by MCP server
+COPY services/__init__.py /app/services/__init__.py
+COPY services/utils /app/services/utils
+COPY services/tools /app/services/tools
 
 # Copy the MCP server code
 COPY services/mcp_server /app/services/mcp_server

@@ -182,20 +182,29 @@ class TestOrchestratorSingleton:
 
 
 class TestReviewAgent:
-    """Test ReviewAgent class."""
+    """Test orchestrator ReviewAgent deprecation shim."""
 
-    def test_review_agent_creation(self):
-        """Test creating a ReviewAgent."""
+    def test_review_agent_creation_warns(self):
+        """Test that creating orchestrator ReviewAgent emits deprecation warning."""
+        import warnings
         from services.orchestrator import ReviewAgent
 
-        agent = ReviewAgent()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            agent = ReviewAgent()
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
         assert agent.name == "ReviewAgent"
 
-    def test_detect_language(self):
-        """Test language detection from file path."""
+    def test_detect_language_delegates(self):
+        """Test language detection delegates to core agent."""
+        import warnings
         from services.orchestrator import ReviewAgent
 
-        agent = ReviewAgent()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            agent = ReviewAgent()
 
         assert agent._detect_language("test.py") == "python"
         assert agent._detect_language("test.js") == "javascript"
@@ -203,11 +212,14 @@ class TestReviewAgent:
         assert agent._detect_language("test.txt") == "text"
 
     @pytest.mark.asyncio
-    async def test_review_file_with_content(self):
-        """Test reviewing file with provided content."""
+    async def test_review_file_delegates(self):
+        """Test that review_file delegates to core ReviewAgent."""
+        import warnings
         from services.orchestrator import ReviewAgent
 
-        agent = ReviewAgent()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            agent = ReviewAgent()
 
         # Mock the dependencies
         with patch('services.prompt_enhancer.get_context_aggregator') as mock_agg, \
@@ -763,8 +775,93 @@ class TestCoreReviewAgent:
         assert "code_fragment" in caps.consumes
         assert "file_path" in caps.consumes
         assert "review" in caps.produces
+        assert "security_findings" in caps.produces
         assert caps.requires_filesystem is True
         assert caps.requires_network is False
+
+    def test_detect_language(self):
+        """Test language detection from file path."""
+        from services.core import ReviewAgent
+
+        agent = ReviewAgent()
+
+        assert agent._detect_language("test.py") == "python"
+        assert agent._detect_language("test.js") == "javascript"
+        assert agent._detect_language("test.ts") == "typescript"
+        assert agent._detect_language("test.go") == "go"
+        assert agent._detect_language("test.rs") == "rust"
+        assert agent._detect_language("test.rb") == "ruby"
+        assert agent._detect_language("test.txt") == "text"
+
+    @pytest.mark.asyncio
+    async def test_review_file_with_content(self):
+        """Test reviewing a file with provided content via direct API."""
+        from services.core import ReviewAgent
+
+        agent = ReviewAgent()
+
+        with patch('services.prompt_enhancer.get_context_aggregator') as mock_agg, \
+             patch('services.code_analysis.get_code_analyzer') as mock_analyzer:
+
+            mock_agg.return_value.gather_context = AsyncMock(return_value=MagicMock())
+            mock_analyzer.return_value.analyze_file = AsyncMock(return_value=[])
+
+            result = await agent.review_file(
+                "test.py",
+                content="def hello(): pass",
+                include_static_analysis=False
+            )
+
+            assert result["file"] == "test.py"
+            assert "prompt" in result
+            assert "issues" in result
+            assert "suggestions" in result
+
+    @pytest.mark.asyncio
+    async def test_detect_bugs_with_content(self):
+        """Test security-focused bug detection via direct API."""
+        from services.core import ReviewAgent
+
+        agent = ReviewAgent()
+
+        with patch('services.code_analysis.get_code_analyzer') as mock_analyzer, \
+             patch('services.prompt_enhancer.PromptBuilder') as mock_builder:
+
+            mock_analyzer.return_value.analyze_file = AsyncMock(return_value=[])
+            mock_builder.return_value.build_prompt = MagicMock(return_value="mock prompt")
+
+            result = await agent.detect_bugs(
+                "test.py",
+                content="import os; os.system(input())"
+            )
+
+            assert result["file"] == "test.py"
+            assert "security_findings" in result
+            assert "prompt" in result
+
+    @pytest.mark.asyncio
+    async def test_invoke_bug_detection_mode(self):
+        """Test invoke with bug_detection mode via context bundle."""
+        from services.core import ReviewAgent, ContextBundle
+
+        agent = ReviewAgent()
+        bundle = ContextBundle(
+            contexts=[{"type": "file_path", "path": "test.py"}],
+            metadata={"mode": "bug_detection"}
+        )
+
+        with patch.object(agent, '_detect_bugs_for_file',
+                          new_callable=AsyncMock) as mock_detect:
+            mock_detect.return_value = {
+                "file": "test.py", "security_findings": []
+            }
+
+            result = await agent.invoke(bundle)
+
+            mock_detect.assert_called_once_with("test.py")
+            # Result should have a context added with type security_findings
+            added = [c for c in result.contexts if c.get("type") == "security_findings"]
+            assert len(added) == 1
 
 
 class TestCoreDocAgent:

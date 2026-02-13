@@ -14,6 +14,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable
@@ -219,7 +220,7 @@ class PromptBuilder:
     Automatically injects relevant context while respecting token limits.
     """
 
-    def __init__(self, max_tokens: int = 4096):
+    def __init__(self, max_tokens: int = int(os.getenv("PROMPT_BUILDER_MAX_TOKENS", "32768"))):
         self.max_tokens = max_tokens
         self._approx_chars_per_token = 4
 
@@ -731,7 +732,7 @@ _prompt_builder: Optional[PromptBuilder] = None
 _context_aggregator: Optional[ContextAggregator] = None
 
 
-def get_prompt_builder(max_tokens: int = 4096) -> PromptBuilder:
+def get_prompt_builder(max_tokens: int = int(os.getenv("PROMPT_BUILDER_MAX_TOKENS", "32768"))) -> PromptBuilder:
     """Get singleton PromptBuilder instance."""
     global _prompt_builder
     if _prompt_builder is None:

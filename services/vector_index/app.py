@@ -4,7 +4,7 @@ Vector Index Service - FastAPI application for vector indexing and search.
 
 import os
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -52,6 +52,10 @@ class InsertRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
+    expand_graph: bool = False
+    graph_depth: int = 1
+    graph_edge_types: List[str] = []
+    task_scope: str = "general"
 
 
 class EmbeddingRequest(BaseModel):
@@ -97,8 +101,16 @@ async def insert_chunks(request: InsertRequest):
 async def search_index(request: SearchRequest):
     """Search the vector index for similar content."""
     try:
-        logger.info("Searching index", query=request.query, top_k=request.top_k)
-        result = vector_index.search(request.query, request.top_k)
+        logger.info("Searching index", query=request.query, top_k=request.top_k,
+                     task_scope=request.task_scope)
+        result = vector_index.search(
+            request.query,
+            top_k=request.top_k,
+            expand_graph=request.expand_graph,
+            graph_depth=request.graph_depth,
+            graph_edge_types=request.graph_edge_types or None,
+            task_scope=request.task_scope if request.task_scope != "general" else None,
+        )
         logger.info("Search completed", num_results=result["total_results"])
         return result
     except Exception as e:

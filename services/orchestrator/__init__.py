@@ -336,150 +336,36 @@ class Orchestrator:
 
 class ReviewAgent:
     """
-    Agent for code review and bug detection.
-
-    Combines static analysis with LLM-powered review.
+    .. deprecated::
+        Use :class:`services.core.ReviewAgent` instead. This shim exists
+        only for backward compatibility and delegates to the canonical
+        core implementation.
     """
 
     def __init__(self):
-        self.name = "ReviewAgent"
+        import warnings
+        warnings.warn(
+            "services.orchestrator.ReviewAgent is deprecated. "
+            "Use services.core.ReviewAgent instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        from services.core import ReviewAgent as _CoreReviewAgent
+        self._delegate = _CoreReviewAgent()
+        self.name = "ReviewAgent"  # Preserve old name for compat
 
     async def review_file(self, file_path: str, content: str = None,
                           include_static_analysis: bool = True) -> Dict[str, Any]:
-        """
-        Perform comprehensive code review on a file.
-
-        Args:
-            file_path: Path to the file
-            content: Optional file content
-            include_static_analysis: Run linters/type checkers
-
-        Returns:
-            Review results with issues and suggestions
-        """
-        from services.prompt_enhancer import (
-            PromptBuilder, TaskType, ContextData, get_context_aggregator
+        return await self._delegate.review_file(
+            file_path, content=content,
+            include_static_analysis=include_static_analysis
         )
-        from services.code_analysis import get_code_analyzer, AnalyzerType
-
-        result = {
-            "file": file_path,
-            "static_analysis": [],
-            "llm_review": None,
-            "issues": [],
-            "suggestions": []
-        }
-
-        # Load content if not provided
-        if content is None:
-            try:
-                from pathlib import Path
-                content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
-            except Exception as e:
-                result["error"] = str(e)
-                return result
-
-        # Run static analysis
-        if include_static_analysis:
-            analyzer = get_code_analyzer()
-            analysis_results = await analyzer.analyze_file(file_path)
-            result["static_analysis"] = [
-                {"analyzer": r.analyzer, "issues": len(r.issues), "summary": r.summary}
-                for r in analysis_results
-            ]
-
-            # Extract issues for prompt
-            for ar in analysis_results:
-                for issue in ar.issues:
-                    result["issues"].append({
-                        "rule": issue.rule,
-                        "message": issue.message,
-                        "line": issue.line,
-                        "severity": issue.severity.value,
-                        "analyzer": issue.analyzer
-                    })
-
-        # Build context for LLM review
-        aggregator = get_context_aggregator()
-        context = await aggregator.gather_context(content[:500], file_path)
-        context.lint_results = result["issues"]
-
-        # Build enhanced prompt
-        builder = PromptBuilder()
-        prompt = builder.build_prompt(
-            TaskType.CODE_REVIEW,
-            context,
-            code=content,
-            language=self._detect_language(file_path)
-        )
-
-        result["prompt"] = prompt  # For debugging/transparency
-
-        return result
 
     async def detect_bugs(self, file_path: str, content: str = None) -> Dict[str, Any]:
-        """
-        Specialized bug detection.
-
-        Args:
-            file_path: Path to the file
-            content: Optional file content
-
-        Returns:
-            Bug detection results
-        """
-        from services.prompt_enhancer import (
-            PromptBuilder, TaskType, ContextData
-        )
-        from services.code_analysis import get_code_analyzer, AnalyzerType
-
-        if content is None:
-            from pathlib import Path
-            content = Path(file_path).read_text(encoding='utf-8', errors='ignore')
-
-        # Run security-focused analysis
-        analyzer = get_code_analyzer()
-        results = await analyzer.analyze_file(
-            file_path,
-            analyzer_types=[AnalyzerType.SECURITY, AnalyzerType.LINTER]
-        )
-
-        context = ContextData()
-        for r in results:
-            for issue in r.issues:
-                context.security_findings.append({
-                    "rule": issue.rule,
-                    "message": issue.message,
-                    "severity": issue.severity.value,
-                    "location": f"{file_path}:{issue.line}"
-                })
-
-        builder = PromptBuilder()
-        prompt = builder.build_prompt(
-            TaskType.BUG_DETECTION,
-            context,
-            code=content,
-            language=self._detect_language(file_path)
-        )
-
-        return {
-            "file": file_path,
-            "security_findings": context.security_findings,
-            "prompt": prompt
-        }
+        return await self._delegate.detect_bugs(file_path, content=content)
 
     def _detect_language(self, file_path: str) -> str:
-        """Detect programming language from file extension."""
-        from pathlib import Path
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".java": "java",
-            ".go": "go",
-            ".rs": "rust"
-        }
-        return ext_map.get(Path(file_path).suffix.lower(), "text")
+        return self._delegate._detect_language(file_path)
 
 
 class TestAgent:
@@ -646,7 +532,7 @@ class DocAgent:
 
 # Singleton instances
 _orchestrator: Optional[Orchestrator] = None
-_review_agent: Optional[ReviewAgent] = None
+_review_agent: Optional['ReviewAgent'] = None
 _test_agent: Optional[TestAgent] = None
 _doc_agent: Optional[DocAgent] = None
 
@@ -659,8 +545,13 @@ def get_orchestrator() -> Orchestrator:
     return _orchestrator
 
 
-def get_review_agent() -> ReviewAgent:
-    """Get singleton ReviewAgent instance."""
+def get_review_agent():
+    """
+    Get singleton ReviewAgent instance.
+
+    .. deprecated::
+        Use ``services.core.ReviewAgent`` directly instead.
+    """
     global _review_agent
     if _review_agent is None:
         _review_agent = ReviewAgent()

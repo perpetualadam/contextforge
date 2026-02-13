@@ -85,9 +85,22 @@ class RAGPipeline:
         self.vector_index_url = VECTOR_INDEX_URL
         self._cache = _retrieval_cache  # Use global cache if available
 
-    def retrieve_contexts(self, query: str, top_k: int = VECTOR_TOP_K,
-                          use_cache: bool = True) -> List[Dict[str, Any]]:
-        """Retrieve relevant contexts from vector index with optional caching."""
+    def retrieve_contexts(
+        self,
+        query: str,
+        top_k: int = VECTOR_TOP_K,
+        use_cache: bool = True,
+        task_scope: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve relevant contexts from vector index with optional caching.
+
+        Args:
+            query: Search query string.
+            top_k: Number of results.
+            use_cache: Whether to use the retrieval cache.
+            task_scope: Task scope key for task-scoped retrieval
+                        (e.g. 'find_bugs', 'explain', 'refactor', 'test').
+        """
         # Check cache first
         if use_cache and self._cache:
             cached = self._cache.get_results(query, top_k=top_k)
@@ -96,10 +109,15 @@ class RAGPipeline:
                 return cached
 
         try:
+            search_payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+            if task_scope and task_scope != "general":
+                search_payload["task_scope"] = task_scope
+                search_payload["expand_graph"] = True  # Enable graph expansion for scoped queries
+
             response = requests.post(
                 f"{self.vector_index_url}/search",
-                json={"query": query, "top_k": top_k},
-                timeout=10
+                json=search_payload,
+                timeout=int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60"))
             )
             response.raise_for_status()
 
@@ -202,15 +220,24 @@ class RAGPipeline:
             latency_ms=0  # Will be filled in later
         )
     
-    def answer_question(self, question: str, 
+    def answer_question(self, question: str,
                        enable_web_search: Optional[bool] = None,
-                       max_tokens: int = 512) -> Dict[str, Any]:
-        """Main RAG pipeline: retrieve, search, and generate answer."""
+                       max_tokens: int = 512,
+                       task_scope: Optional[str] = None) -> Dict[str, Any]:
+        """Main RAG pipeline: retrieve, search, and generate answer.
+
+        Args:
+            question: The user's question.
+            enable_web_search: Override web search setting.
+            max_tokens: Max tokens for the LLM response.
+            task_scope: Task scope key for task-scoped retrieval
+                        (e.g. 'find_bugs', 'explain', 'refactor').
+        """
         start_time = datetime.now()
-        
+
         # Step 1: Retrieve contexts from vector index
         logger.info(f"Retrieving contexts for: {question}")
-        contexts = self.retrieve_contexts(question)
+        contexts = self.retrieve_contexts(question, task_scope=task_scope)
         
         # Step 2: Optionally search the web
         web_results = []

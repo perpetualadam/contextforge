@@ -2280,7 +2280,12 @@ class MarkdownChunker(BaseChunker):
 
 
 class ChunkerFactory:
-    """Factory for creating language-specific chunkers."""
+    """Factory for creating language-specific chunkers.
+
+    Prefers tree-sitter AST-based chunkers when available for a language,
+    falling back to the regex-based chunkers otherwise. Callers can opt out
+    of tree-sitter by passing ``use_tree_sitter=False``.
+    """
 
     _chunkers = {
         # Python
@@ -2322,23 +2327,63 @@ class ChunkerFactory:
         # Julia
         '.jl': JuliaChunker,
     }
-    
+
     @classmethod
-    def get_chunker(cls, file_path: str, **kwargs) -> BaseChunker:
-        """Get appropriate chunker for file extension."""
-        # Get file extension
+    def get_chunker(cls, file_path: str, use_tree_sitter: bool = True, **kwargs):
+        """Get appropriate chunker for file extension.
+
+        When ``use_tree_sitter`` is True (default), attempts to use the
+        tree-sitter based ``TreeSitterChunker`` for languages it supports.
+        Falls back to the regex-based chunker if tree-sitter is unavailable
+        or doesn't support the language.
+
+        Args:
+            file_path: Path to the file being chunked.
+            use_tree_sitter: Whether to prefer tree-sitter chunking.
+            **kwargs: Passed through to the chunker constructor
+                      (e.g. max_chunk_size, overlap).
+
+        Returns:
+            A chunker instance implementing ``chunk(content, file_path)``.
+        """
+        # Determine file extension
         ext = None
         for extension in cls._chunkers.keys():
             if file_path.lower().endswith(extension):
                 ext = extension
                 break
-        
+
+        # Try tree-sitter first
+        if use_tree_sitter:
+            try:
+                from .tree_sitter_parser import TreeSitterParser, TREE_SITTER_AVAILABLE
+                if TREE_SITTER_AVAILABLE:
+                    ts_language = TreeSitterParser.language_for_extension(
+                        ext or ''
+                    )
+                    if ts_language and TreeSitterParser.supports_language(ts_language):
+                        from .tree_sitter_chunker import TreeSitterChunker
+                        ts_kwargs = {
+                            k: v for k, v in kwargs.items()
+                            if k in ('max_chunk_size', 'overlap')
+                        }
+                        return TreeSitterChunker(ts_language, **ts_kwargs)
+            except Exception as e:
+                logger.warning(
+                    f"Tree-sitter chunker init failed for {file_path}, "
+                    f"falling back to regex: {e}"
+                )
+
+        # Fallback to regex-based chunker
+        regex_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k in ('max_chunk_size', 'overlap')
+        }
         if ext and ext in cls._chunkers:
-            return cls._chunkers[ext](**kwargs)
+            return cls._chunkers[ext](**regex_kwargs)
         else:
-            # Default to JavaScript chunker for unknown types
-            return JavaScriptChunker(**kwargs)
-    
+            return JavaScriptChunker(**regex_kwargs)
+
     @classmethod
     def supported_extensions(cls) -> List[str]:
         """Get list of supported file extensions."""

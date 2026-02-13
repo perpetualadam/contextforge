@@ -30,7 +30,7 @@ try:
     DEFAULT_TEMPERATURE = _config.llm.temperature
     CONFIG_AVAILABLE = True
 except ImportError:
-    DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
+    DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "300"))
     DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
     DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     _config = None

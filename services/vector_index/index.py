@@ -58,7 +58,7 @@ except ImportError:
 
     # Fallback to environment variables
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-mpnet-base-v2")
-    CODE_EMBEDDING_MODEL = os.getenv("CODE_EMBEDDING_MODEL", "microsoft/codebert-base")
+    CODE_EMBEDDING_MODEL = os.getenv("CODE_EMBEDDING_MODEL", "nomic-ai/CodeRankEmbed")
     USE_CODE_EMBEDDINGS = os.getenv("USE_CODE_EMBEDDINGS", "true").lower() == "true"
     DATA_DIR = os.getenv("DATA_DIR", "/app/data")
     HYBRID_SEARCH_ENABLED = os.getenv("HYBRID_SEARCH_ENABLED", "true").lower() == "true"
@@ -67,10 +67,16 @@ except ImportError:
     RECENCY_BOOST_ENABLED = os.getenv("RECENCY_BOOST_ENABLED", "true").lower() == "true"
     RECENCY_BOOST_FACTOR = float(os.getenv("RECENCY_BOOST_FACTOR", "0.1"))
 
+# Model-agnostic prefix support: many modern embedding models require
+# different prefixes for queries vs documents.  Set via env vars.
+QUERY_PREFIX = os.getenv("QUERY_PREFIX", "")
+DOCUMENT_PREFIX = os.getenv("DOCUMENT_PREFIX", "")
+
 # Derived paths
 INDEX_FILE = os.path.join(DATA_DIR, "faiss_index.bin")
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 LEXICAL_INDEX_FILE = os.path.join(DATA_DIR, "lexical_index.json")
+CODE_GRAPH_FILE = os.path.join(DATA_DIR, "code_graph.json")
 
 # Code file extensions for specialized embedding
 CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cs', '.cpp', '.c',
@@ -79,20 +85,39 @@ CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cs', '.cpp', 
 
 class EmbeddingGenerator:
     """
-    Handles text embedding generation with support for multiple models.
+    Model-agnostic embedding generator with multi-model support.
 
+    Supports any SentenceTransformers-compatible model via configuration.
     Features:
-    - Primary model: all-mpnet-base-v2 for high-quality general embeddings (768 dim)
-    - Code model: CodeBERT or similar for code-specific embeddings
-    - Automatic model selection based on content type
+    - Primary model for general text (default: all-mpnet-base-v2)
+    - Code-specific model with automatic selection (default: nomic-ai/CodeRankEmbed)
+    - Configurable query/document prefixes for modern asymmetric models
+    - Automatic dimension detection and validation
+    - Graceful fallback when code model unavailable or dimension-mismatched
+
+    To swap models, set environment variables:
+        EMBEDDING_MODEL=your-model-name
+        CODE_EMBEDDING_MODEL=your-code-model
+        QUERY_PREFIX="search_query: "
+        DOCUMENT_PREFIX="search_document: "
     """
 
-    def __init__(self, model_name: str = EMBEDDING_MODEL, use_code_model: bool = USE_CODE_EMBEDDINGS):
+    def __init__(
+        self,
+        model_name: str = EMBEDDING_MODEL,
+        use_code_model: bool = USE_CODE_EMBEDDINGS,
+        query_prefix: str = QUERY_PREFIX,
+        document_prefix: str = DOCUMENT_PREFIX,
+    ):
         self.model_name = model_name
         self.code_model_name = CODE_EMBEDDING_MODEL
         self.use_code_model = use_code_model
+        self.query_prefix = query_prefix
+        self.document_prefix = document_prefix
         self.model = None
         self.code_model = None
+        self._primary_dim: int = 768
+        self._code_dim: Optional[int] = None
         self._load_models()
 
     def _load_models(self):
@@ -100,17 +125,38 @@ class EmbeddingGenerator:
         try:
             logger.info(f"Loading primary embedding model: {self.model_name}")
             self.model = SentenceTransformer(self.model_name)
-            logger.info(f"Primary embedding model loaded successfully (dim={self.model.get_sentence_embedding_dimension()})")
+            self._primary_dim = self.model.get_sentence_embedding_dimension()
+            logger.info(
+                f"Primary embedding model loaded: {self.model_name} "
+                f"(dim={self._primary_dim})"
+            )
 
-            # Load code-specific model if enabled
             if self.use_code_model:
                 try:
                     logger.info(f"Loading code embedding model: {self.code_model_name}")
                     self.code_model = SentenceTransformer(self.code_model_name)
-                    logger.info(f"Code embedding model loaded successfully (dim={self.code_model.get_sentence_embedding_dimension()})")
+                    self._code_dim = self.code_model.get_sentence_embedding_dimension()
+
+                    if self._code_dim != self._primary_dim:
+                        logger.warning(
+                            f"Code model dimension ({self._code_dim}) differs from "
+                            f"primary ({self._primary_dim}). Code model will be used "
+                            f"standalone; dimension set to code model."
+                        )
+                        # When code model has different dim, we use it as the
+                        # single model for ALL content to keep FAISS consistent.
+                        # The primary model becomes the fallback for non-code.
+                        # We pick the code model dim as the canonical dimension
+                        # since code embedding quality matters most here.
+
+                    logger.info(
+                        f"Code embedding model loaded: {self.code_model_name} "
+                        f"(dim={self._code_dim})"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to load code embedding model, using primary model: {e}")
+                    logger.warning(f"Failed to load code model, using primary only: {e}")
                     self.code_model = None
+                    self._code_dim = None
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             raise
@@ -122,7 +168,6 @@ class EmbeddingGenerator:
             if ext in CODE_EXTENSIONS:
                 return True
 
-        # Heuristic: check for code patterns
         code_patterns = [
             r'def\s+\w+\s*\(', r'class\s+\w+', r'function\s+\w+',
             r'import\s+', r'from\s+\w+\s+import', r'const\s+\w+\s*=',
@@ -132,14 +177,24 @@ class EmbeddingGenerator:
         matches = sum(1 for p in code_patterns if re.search(p, text))
         return matches >= 2
 
+    def _apply_prefix(self, texts: List[str], prefix: str) -> List[str]:
+        """Prepend a prefix to each text if the prefix is non-empty."""
+        if not prefix:
+            return texts
+        return [f"{prefix}{t}" for t in texts]
+
     def encode(self, texts: List[str], file_paths: Optional[List[str]] = None) -> np.ndarray:
-        """Generate embeddings for a list of texts."""
+        """Generate embeddings for indexing documents.
+
+        Applies DOCUMENT_PREFIX to all texts before encoding.
+        Routes code content to the code model when available and dimensions match.
+        """
         if not self.model:
             raise RuntimeError("Embedding model not loaded")
 
         try:
-            # If code model is available and enabled, use it for code content
-            if self.code_model and file_paths:
+            # If code model is available, enabled, and same dimension → route
+            if self.code_model and file_paths and self._code_dim == self._primary_dim:
                 code_indices = []
                 text_indices = []
 
@@ -149,56 +204,80 @@ class EmbeddingGenerator:
                     else:
                         text_indices.append(i)
 
-                # Generate embeddings with appropriate models
-                embeddings = np.zeros((len(texts), self.dimension))
+                embeddings = np.zeros((len(texts), self.dimension), dtype=np.float32)
 
                 if text_indices:
-                    text_texts = [texts[i] for i in text_indices]
-                    text_embeds = self.model.encode(text_texts, convert_to_numpy=True)
+                    text_batch = self._apply_prefix(
+                        [texts[i] for i in text_indices], self.document_prefix
+                    )
+                    text_embeds = self.model.encode(text_batch, convert_to_numpy=True)
                     for j, i in enumerate(text_indices):
                         embeddings[i] = text_embeds[j]
 
                 if code_indices:
-                    code_texts = [texts[i] for i in code_indices]
-                    # For code, prepend with special token if using CodeBERT-style model
-                    code_embeds = self.code_model.encode(code_texts, convert_to_numpy=True)
+                    code_batch = self._apply_prefix(
+                        [texts[i] for i in code_indices], self.document_prefix
+                    )
+                    code_embeds = self.code_model.encode(code_batch, convert_to_numpy=True)
                     for j, i in enumerate(code_indices):
-                        # Resize if dimensions differ
                         if code_embeds[j].shape[0] != self.dimension:
-                            # Use primary model for consistency
-                            embeddings[i] = self.model.encode([texts[i]], convert_to_numpy=True)[0]
+                            embeddings[i] = self.model.encode(
+                                self._apply_prefix([texts[i]], self.document_prefix),
+                                convert_to_numpy=True
+                            )[0]
                         else:
                             embeddings[i] = code_embeds[j]
 
                 return embeddings
-            else:
-                # Use primary model for all texts
-                embeddings = self.model.encode(texts, convert_to_numpy=True)
-                return embeddings
+
+            # If code model has different dimension, use it for ALL content
+            # (code-first approach — better code retrieval at slight prose cost)
+            if self.code_model and self._code_dim and self._code_dim != self._primary_dim:
+                prefixed = self._apply_prefix(texts, self.document_prefix)
+                return self.code_model.encode(prefixed, convert_to_numpy=True)
+
+            # Default: primary model for everything
+            prefixed = self._apply_prefix(texts, self.document_prefix)
+            return self.model.encode(prefixed, convert_to_numpy=True)
+
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {e}")
             raise
 
     def encode_single(self, text: str, file_path: Optional[str] = None) -> np.ndarray:
-        """Generate embedding for a single text."""
-        file_paths = [file_path] if file_path else None
-        return self.encode([text], file_paths)[0]
+        """Generate embedding for a single search query.
+
+        Applies QUERY_PREFIX to the text before encoding.
+        """
+        prefixed = f"{self.query_prefix}{text}" if self.query_prefix else text
+
+        if self.code_model and self._code_dim and self._code_dim != self._primary_dim:
+            # When using a different-dim code model as primary, use it for queries too
+            return self.code_model.encode([prefixed], convert_to_numpy=True)[0]
+
+        if not self.model:
+            raise RuntimeError("Embedding model not loaded")
+        return self.model.encode([prefixed], convert_to_numpy=True)[0]
 
     @property
     def dimension(self) -> int:
-        """Get the embedding dimension (using primary model)."""
-        if not self.model:
-            return 768  # Default for all-mpnet-base-v2
-        return self.model.get_sentence_embedding_dimension()
+        """Get the canonical embedding dimension for the FAISS index."""
+        # If code model is loaded and has different dimension, that's the canonical one
+        if self.code_model and self._code_dim and self._code_dim != self._primary_dim:
+            return self._code_dim
+        return self._primary_dim
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about loaded models."""
+        """Get information about loaded models and configuration."""
         return {
             "primary_model": self.model_name,
-            "primary_dimension": self.model.get_sentence_embedding_dimension() if self.model else None,
+            "primary_dimension": self._primary_dim,
             "code_model": self.code_model_name if self.code_model else None,
-            "code_dimension": self.code_model.get_sentence_embedding_dimension() if self.code_model else None,
-            "use_code_embeddings": self.use_code_model and self.code_model is not None
+            "code_dimension": self._code_dim,
+            "use_code_embeddings": self.use_code_model and self.code_model is not None,
+            "canonical_dimension": self.dimension,
+            "query_prefix": self.query_prefix or "(none)",
+            "document_prefix": self.document_prefix or "(none)",
         }
 
 
@@ -753,16 +832,19 @@ class PerformanceMetrics:
 
 class VectorIndex:
     """
-    Main vector index class with hybrid retrieval support.
+    Main vector index class with hybrid retrieval and code-graph support.
 
     Features:
     - Automatic backend selection (FAISS or in-memory)
     - Hybrid search (dense + lexical)
+    - Code graph for relationship-aware retrieval
     - Recency boosting for recent code changes
     - LLM-based re-ranking (optional)
     """
 
     def __init__(self, enable_hybrid: bool = HYBRID_SEARCH_ENABLED):
+        from .code_graph import CodeGraph
+
         self.embedding_generator = EmbeddingGenerator()
         self.dimension = self.embedding_generator.dimension
         self.enable_hybrid = enable_hybrid
@@ -775,7 +857,6 @@ class VectorIndex:
                 hnsw_neighbors = _config.indexing.faiss_hnsw_neighbors
                 nprobe = _config.indexing.faiss_nprobe
             else:
-                # Fallback to environment variables
                 index_type = os.getenv("FAISS_INDEX_TYPE", "HNSW")
                 hnsw_neighbors = int(os.getenv("FAISS_HNSW_NEIGHBORS", "32"))
                 nprobe = int(os.getenv("FAISS_NPROBE", "10"))
@@ -793,6 +874,9 @@ class VectorIndex:
 
         # Initialize lexical index for hybrid search
         self.lexical_index = LexicalIndex() if enable_hybrid else None
+
+        # Initialize code graph for relationship-aware retrieval
+        self.code_graph = CodeGraph(storage_path=CODE_GRAPH_FILE)
 
         # Initialize performance metrics
         self.metrics = PerformanceMetrics()
@@ -858,6 +942,22 @@ class VectorIndex:
             if self.lexical_index:
                 for doc_id, (text, meta) in zip(ids, zip(texts, metadata)):
                     self.lexical_index.add(doc_id, text, meta)
+
+            # Add to code graph — extract relationships from chunk metadata
+            for chunk in chunks:
+                chunk_id = chunk.get("chunk_id", "")
+                chunk_meta = chunk.get("meta", {})
+                symbol_name = (
+                    chunk_meta.get("symbol_name")
+                    or chunk_meta.get("function_name")
+                    or chunk_meta.get("class_name")
+                    or ""
+                )
+                relationships = chunk_meta.get("relationships", [])
+                if chunk_id and (symbol_name or relationships):
+                    self.code_graph.add_chunk(chunk_id, symbol_name, relationships)
+
+            self.code_graph.rebuild_reverse_index()
 
             # Save indexes
             self.save()
@@ -1028,7 +1128,11 @@ class VectorIndex:
     def search(self, query: str, top_k: int = 10,
                enable_hybrid: Optional[bool] = None,
                enable_reranking: bool = False,
-               recency_boost: Optional[bool] = None) -> Dict[str, Any]:
+               recency_boost: Optional[bool] = None,
+               expand_graph: bool = False,
+               graph_depth: int = 1,
+               graph_edge_types: Optional[List[str]] = None,
+               task_scope: Optional[str] = None) -> Dict[str, Any]:
         """
         Search the index for similar content with hybrid retrieval.
 
@@ -1038,11 +1142,26 @@ class VectorIndex:
             enable_hybrid: Override hybrid search setting
             enable_reranking: Enable LLM-based re-ranking
             recency_boost: Override recency boost setting
+            expand_graph: Whether to expand results via code graph
+            graph_depth: Depth of graph traversal
+            graph_edge_types: Edge types to follow during expansion
+            task_scope: Task scope key for task-scoped retrieval
         """
         # Start timing
         start_time = time.time()
 
         try:
+            # Apply task scope overrides if provided
+            scope_config = None
+            if task_scope:
+                scope_config = self._resolve_task_scope(
+                    task_scope, expand_graph, graph_depth, graph_edge_types
+                )
+                if scope_config:
+                    expand_graph = scope_config.get("graph_expand", expand_graph)
+                    graph_depth = scope_config.get("graph_depth", graph_depth)
+                    graph_edge_types = scope_config.get("graph_edge_types", graph_edge_types)
+
             use_hybrid = enable_hybrid if enable_hybrid is not None else self.enable_hybrid
             use_recency = recency_boost if recency_boost is not None else RECENCY_BOOST_ENABLED
 
@@ -1079,11 +1198,31 @@ class VectorIndex:
                     "lexical_score": result.get("lexical_score", 0),
                     "recency_boost": result.get("recency_boost", 0),
                     "meta": result["metadata"].get("meta", {}),
+                    "chunk_id": result["metadata"].get("chunk_id", ""),
                     "source": result["metadata"].get("source", "unknown"),
                     "content_type": result["metadata"].get("content_type", "unknown"),
                     "rank": i + 1
                 }
                 formatted_results.append(formatted_result)
+
+            # Apply task-scope boosting (chunk type + content type)
+            if scope_config:
+                formatted_results = self._apply_scope_boost(formatted_results, scope_config)
+                formatted_results.sort(key=lambda x: x["score"], reverse=True)
+
+            # Graph expansion: append related chunks
+            if expand_graph and graph_depth > 0 and self.code_graph:
+                metadata_lookup = None
+                try:
+                    metadata_lookup = self.index.metadata
+                except Exception:
+                    pass
+                formatted_results = self.code_graph.expand_results(
+                    formatted_results,
+                    depth=graph_depth,
+                    edge_types=graph_edge_types,
+                    metadata_lookup=metadata_lookup,
+                )
 
             # Record performance metrics
             query_time = time.time() - start_time
@@ -1098,6 +1237,8 @@ class VectorIndex:
                 "timestamp": datetime.now().isoformat(),
                 "search_type": "hybrid" if use_hybrid else "dense",
                 "recency_boost_applied": use_recency,
+                "graph_expanded": expand_graph,
+                "task_scope": task_scope,
                 "performance": {
                     "query_time_seconds": query_time
                 }
@@ -1106,6 +1247,40 @@ class VectorIndex:
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise
+
+    @staticmethod
+    def _resolve_task_scope(
+        task_scope: str,
+        expand_graph: bool,
+        graph_depth: int,
+        graph_edge_types: Optional[List[str]],
+    ) -> Optional[Dict[str, Any]]:
+        """Load task scope config if available."""
+        try:
+            from .task_scopes import TASK_SCOPES
+            return TASK_SCOPES.get(task_scope)
+        except ImportError:
+            return None
+
+    @staticmethod
+    def _apply_scope_boost(
+        results: List[Dict[str, Any]], scope_config: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Apply chunk-type and content-type boosts from a task scope."""
+        preferred_chunk_types = scope_config.get("preferred_chunk_types")
+        boost_content_types = scope_config.get("boost_content_types")
+
+        for r in results:
+            meta = r.get("meta", {})
+            chunk_type = meta.get("chunk_type", "")
+            content_type = r.get("content_type", "")
+
+            if preferred_chunk_types and chunk_type in preferred_chunk_types:
+                r["score"] = r["score"] * 1.2
+            if boost_content_types and content_type in boost_content_types:
+                r["score"] = r["score"] * 1.1
+
+        return results
 
     def _fuse_results(self, dense_results: List[Dict], lexical_results: List[Dict],
                       top_k: int) -> List[Dict]:
@@ -1200,12 +1375,16 @@ class VectorIndex:
         self.index.save(INDEX_FILE, METADATA_FILE)
         if self.lexical_index:
             self.lexical_index.save(LEXICAL_INDEX_FILE)
+        if self.code_graph:
+            self.code_graph.save(CODE_GRAPH_FILE)
 
     def load(self):
         """Load all indexes from disk."""
         loaded = self.index.load(INDEX_FILE, METADATA_FILE)
         if self.lexical_index:
             self.lexical_index.load(LEXICAL_INDEX_FILE)
+        if self.code_graph:
+            self.code_graph.load(CODE_GRAPH_FILE)
         return loaded
 
     def clear(self):
@@ -1213,6 +1392,8 @@ class VectorIndex:
         self.index.clear()
         if self.lexical_index:
             self.lexical_index.clear()
+        if self.code_graph:
+            self.code_graph.clear()
         self.save()
         return {"message": "All indexes cleared successfully"}
 
@@ -1232,6 +1413,9 @@ class VectorIndex:
 
         if self.lexical_index:
             base_stats["lexical_index"] = self.lexical_index.stats()
+
+        if self.code_graph:
+            base_stats["code_graph"] = self.code_graph.stats()
 
         return base_stats
 
