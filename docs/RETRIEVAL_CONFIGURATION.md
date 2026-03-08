@@ -433,3 +433,128 @@ Large embedding models (2B+ params) are slower to encode. Options:
 - Disable code embeddings: `USE_CODE_EMBEDDINGS=false`
 - Use a smaller model: `EMBEDDING_MODEL=all-MiniLM-L6-v2`
 - Reduce HNSW neighbors: `FAISS_HNSW_NEIGHBORS=16`
+
+---
+
+## 9. Cross-Encoder Re-Ranking
+
+After hybrid search returns candidate results, an optional cross-encoder re-ranks them for higher relevance. This is especially effective for queries where BM25 and dense scores disagree.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RERANK_ENABLED` | `false` | Enable cross-encoder re-ranking |
+| `RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Re-ranking model |
+| `RERANK_TOP_K` | `50` | Candidates to re-rank (search retrieves this many, returns `top_k`) |
+
+### How It Works
+
+1. Hybrid search retrieves `RERANK_TOP_K` candidates (default 50).
+2. Each candidate is scored by the cross-encoder against the original query.
+3. Results are re-sorted by cross-encoder score.
+4. The top `top_k` results are returned.
+
+### Enabling
+
+```bash
+RERANK_ENABLED=true
+RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+```
+
+For code-specific re-ranking, use a code-trained cross-encoder if available.
+
+---
+
+## 10. Token Budgeting
+
+The RAG pipeline enforces a token budget to ensure context fits within the LLM's context window.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAG_CONTEXT_BUDGET` | `16384` | Max tokens allocated for retrieved context |
+| `PROMPT_BUILDER_MAX_TOKENS` | `32768` | Total prompt budget (includes system prompt + context + query) |
+| `MAX_CONTEXT_TOKENS` | `32768` | Hierarchical retriever budget |
+
+### How It Works
+
+The `_budget_contexts()` function in the RAG pipeline:
+
+1. Takes the list of ranked contexts from search.
+2. Estimates token count for each chunk (characters / 4 approximation).
+3. Greedily adds chunks until the budget is exhausted.
+4. Returns only the chunks that fit.
+
+This prevents prompt truncation or LLM errors from overly long contexts.
+
+---
+
+## 11. Hierarchical Retrieval
+
+For large codebases, the hierarchical retriever performs multi-stage retrieval: module-level, then file-level, then symbol-level.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_CONTEXT_TOKENS` | `32768` | Total token budget for hierarchical retrieval |
+
+### How It Works
+
+1. **Stage 1 (Module)**: Retrieve top modules relevant to the query.
+2. **Stage 2 (File)**: Within those modules, retrieve relevant files.
+3. **Stage 3 (Symbol)**: Within those files, retrieve specific functions/classes.
+4. **Budget enforcement**: At each stage, results are trimmed to fit the remaining token budget.
+
+This avoids the problem of retrieving scattered, low-relevance chunks from unrelated parts of a large codebase.
+
+---
+
+## 12. Editor Context
+
+The RAG pipeline accepts editor state from the VS Code extension to improve context selection.
+
+### Editor Context Fields
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `current_file` | Active editor | Currently open file path |
+| `current_selection` | Editor selection | Selected code text |
+| `open_files` | Tab group | All open file paths |
+| `cursor_position` | Cursor | Line and column |
+| `git_diff` | `git diff` | Staged and unstaged changes |
+| `recent_files` | History | Recently viewed files |
+
+### How It's Used
+
+- **Current file** is boosted in search results (higher relevance score).
+- **Selection** is prepended to the query for better semantic matching.
+- **Git diff** provides change awareness for code review and bug-finding queries.
+- **Open files** are used as secondary context signals.
+
+### API Usage
+
+Editor context is automatically gathered by the VS Code extension and sent with every `/query`, `/chat`, `/completion`, and `/inline-edit` request.
+
+---
+
+## 13. Incremental Indexing on Save
+
+Files are automatically re-indexed when saved in VS Code, keeping the search index up to date.
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `contextforge.incrementalIndexing` | `true` | Enable file-save indexing |
+
+### How It Works
+
+1. The VS Code extension listens for `onDidSaveTextDocument` events.
+2. After a 2-second debounce, it sends the saved file to `POST /ingest` with a single-file path.
+3. The preprocessor re-chunks the file and the vector index updates the embeddings.
+4. Stale chunks for the old version of the file are replaced.
+
+This means you never need to manually re-ingest after making changes.

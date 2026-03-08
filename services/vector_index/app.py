@@ -56,6 +56,7 @@ class SearchRequest(BaseModel):
     graph_depth: int = 1
     graph_edge_types: List[str] = []
     task_scope: str = "general"
+    enable_reranking: bool = False
 
 
 class EmbeddingRequest(BaseModel):
@@ -110,12 +111,26 @@ async def search_index(request: SearchRequest):
             graph_depth=request.graph_depth,
             graph_edge_types=request.graph_edge_types or None,
             task_scope=request.task_scope if request.task_scope != "general" else None,
+            enable_reranking=request.enable_reranking,
         )
         logger.info("Search completed", num_results=result["total_results"])
         return result
     except Exception as e:
         logger.error("Search failed", error=str(e))
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+
+
+@app.delete("/index/file/{file_path:path}")
+async def remove_file_chunks(file_path: str):
+    """Remove all chunks associated with a specific file path."""
+    try:
+        logger.info("Removing chunks for file", file_path=file_path)
+        result = vector_index.remove_by_file(file_path)
+        logger.info("Chunks removed", removed=result["removed"], file_path=file_path)
+        return result
+    except Exception as e:
+        logger.error("Failed to remove file chunks", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to remove chunks: {e}")
 
 
 @app.delete("/index/clear")

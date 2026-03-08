@@ -830,6 +830,54 @@ class PerformanceMetrics:
         self.last_query_time = None
 
 
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "false").lower() == "true"
+RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "10"))
+
+
+class Reranker:
+    """Cross-encoder re-ranker with lazy model loading."""
+
+    def __init__(self, model_name: str = RERANK_MODEL):
+        self.model_name = model_name
+        self._model = None
+
+    @property
+    def model(self):
+        if self._model is None:
+            from sentence_transformers import CrossEncoder
+            logger.info(f"Loading re-rank model: {self.model_name}")
+            self._model = CrossEncoder(self.model_name)
+            logger.info("Re-rank model loaded")
+        return self._model
+
+    def rerank(
+        self,
+        query: str,
+        results: List[Dict[str, Any]],
+        top_k: int = RERANK_TOP_K,
+    ) -> List[Dict[str, Any]]:
+        """Re-rank results using a cross-encoder.
+
+        Args:
+            query: Original search query.
+            results: Formatted result dicts (must have ``text`` key).
+            top_k: Number of results to keep after re-ranking.
+        """
+        if not results:
+            return results
+
+        pairs = [(query, r.get("text", "")) for r in results]
+        scores = self.model.predict(pairs)
+
+        for r, score in zip(results, scores):
+            r["rerank_score"] = float(score)
+            r["score"] = float(score)
+
+        results.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+        return results[:top_k]
+
+
 class VectorIndex:
     """
     Main vector index class with hybrid retrieval and code-graph support.
@@ -839,7 +887,7 @@ class VectorIndex:
     - Hybrid search (dense + lexical)
     - Code graph for relationship-aware retrieval
     - Recency boosting for recent code changes
-    - LLM-based re-ranking (optional)
+    - Cross-encoder re-ranking (optional)
     """
 
     def __init__(self, enable_hybrid: bool = HYBRID_SEARCH_ENABLED):
@@ -848,6 +896,7 @@ class VectorIndex:
         self.embedding_generator = EmbeddingGenerator()
         self.dimension = self.embedding_generator.dimension
         self.enable_hybrid = enable_hybrid
+        self._reranker: Optional[Reranker] = None
 
         # Choose backend
         if FAISS_AVAILABLE:
@@ -1188,9 +1237,11 @@ class VectorIndex:
             # Take top-k
             final_results = combined_results[:top_k]
 
-            # Format results
+            # Format results, skip tombstoned entries
             formatted_results = []
             for i, result in enumerate(final_results):
+                if result.get("metadata", {}).get("_deleted"):
+                    continue
                 formatted_result = {
                     "text": result["metadata"].get("text", ""),
                     "score": result.get("final_score", result.get("score", 0)),
@@ -1209,6 +1260,19 @@ class VectorIndex:
             if scope_config:
                 formatted_results = self._apply_scope_boost(formatted_results, scope_config)
                 formatted_results.sort(key=lambda x: x["score"], reverse=True)
+
+            # Cross-encoder re-ranking
+            should_rerank = enable_reranking or RERANK_ENABLED
+            if should_rerank and formatted_results:
+                try:
+                    if self._reranker is None:
+                        self._reranker = Reranker()
+                    rerank_k = RERANK_TOP_K if RERANK_TOP_K else top_k
+                    formatted_results = self._reranker.rerank(
+                        query, formatted_results, top_k=rerank_k
+                    )
+                except Exception as rerank_err:
+                    logger.warning(f"Re-ranking failed, using original order: {rerank_err}")
 
             # Graph expansion: append related chunks
             if expand_graph and graph_depth > 0 and self.code_graph:
@@ -1418,6 +1482,48 @@ class VectorIndex:
             base_stats["code_graph"] = self.code_graph.stats()
 
         return base_stats
+
+    def remove_by_file(self, file_path: str) -> Dict[str, Any]:
+        """Remove all chunks belonging to a specific file.
+
+        Since FAISS doesn't support deletion natively (especially HNSW),
+        we mark matching metadata entries as deleted and exclude them from
+        future search results via a tombstone flag.  A full rebuild is
+        required to reclaim space.
+        """
+        removed = 0
+        for meta in self.index.metadata:
+            chunk_meta = meta.get("meta", {})
+            if chunk_meta.get("file_path") == file_path:
+                meta["_deleted"] = True
+                removed += 1
+
+        # Remove from lexical index
+        if self.lexical_index:
+            ids_to_remove = [
+                doc_id
+                for doc_id, m in self.lexical_index.id_to_metadata.items()
+                if (m.get("meta") or {}).get("file_path") == file_path
+            ]
+            for doc_id in ids_to_remove:
+                self.lexical_index.doc_terms.pop(doc_id, None)
+                self.lexical_index.doc_lengths.pop(doc_id, None)
+                self.lexical_index.id_to_metadata.pop(doc_id, None)
+            for term, doc_ids in self.lexical_index.inverted_index.items():
+                doc_ids -= set(ids_to_remove)
+            self.lexical_index.total_docs = max(
+                0, self.lexical_index.total_docs - len(ids_to_remove)
+            )
+
+        # Remove from code graph
+        if self.code_graph:
+            self.code_graph.remove_by_file(file_path)
+
+        if removed:
+            self.save()
+
+        logger.info(f"Removed {removed} chunks for file {file_path}")
+        return {"removed": removed, "file_path": file_path}
 
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics for the index."""

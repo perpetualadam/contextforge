@@ -1,821 +1,409 @@
 # ContextForge
 
-A complete local-first context engine and AI assistant pipeline for intelligent code analysis and retrieval. ContextForge provides semantic search, multi-LLM support, and VS Code integration for enhanced developer productivity.
+A full-featured, local-first AI coding assistant and context engine that rivals commercial tools like Cursor. ContextForge provides inline code completion, intelligent editing, multi-file agent mode, semantic search, and deep VS Code integration -- all with privacy-first design and multi-LLM support.
 
-## 🚀 Features
+## Feature Matrix
 
-- **Local-First Architecture**: Privacy-focused design with optional remote LLM support
-- **Multi-Language Support**: 15+ languages with tree-sitter AST-based and regex chunking
-  - **Tree-sitter support**: Python, JavaScript, TypeScript, Java, Rust, Go, C/C++, C#, Ruby, PHP, Kotlin, Julia, HTML, CSS
-  - **AST-aware chunking by default**: Functions, classes, methods, and imports extracted as semantic units (not fixed-size splits)
-  - **Relationship extraction**: Import, call, inheritance, and containment edges extracted during chunking
-  - **Regex fallback**: Additional languages including Swift, R, Scala, Lua, Perl, Shell
-- **Vector Search**: FAISS-powered semantic search with hybrid retrieval (dense + lexical)
-  - **Model-agnostic embeddings**: Swap any sentence-transformers model via env vars (default: all-mpnet-base-v2 + CodeRankEmbed)
-  - **Query/document prefixes**: Supports asymmetric models (CodeRankEmbed, Nomic, Jina, etc.)
-  - **Code Graph**: Relationship-aware retrieval — tracks imports, calls, inheritance, containment alongside embeddings
-  - **Task-scoped retrieval**: Different search strategies per task (find_bugs, explain, refactor, test)
-  - **HNSW indexing**: Optimized for large datasets (100k+ vectors)
-  - **Recency boosting**: Prioritize recently modified code
-- **Multi-LLM Backend**: 8 providers with intelligent fallback
-  - **Local**: Ollama, LM Studio
-  - **Cloud**: OpenAI, Anthropic, Mistral, DeepSeek, Grok (xAI), Groq
-- **Web Search Integration**: SerpAPI, Bing, Google CSE with scraping fallback
-- **VS Code Extension**: Native editor integration with workspace ingestion, query interface, and AI chat
-- **AI Chat Interface**: Interactive chat panel with multi-turn conversations, markdown rendering, and code actions
-- **Git/GitHub Integration**: Comprehensive Git operations with AI-powered commit messages and GitHub API integration
-- **File/Media Attachments**: Upload and analyze files, images, PDFs, and documents in chat with AI-powered insights
-- **Microservices Architecture**: Docker Compose orchestration with health monitoring
-- **Remote Agent Support (Planned)**: Distributed agent architecture for scalable processing across multiple machines
-- **Comprehensive Testing**: Unit tests, integration tests, and CI/CD pipeline
+| # | Feature | Status | Shortcut |
+|---|---------|--------|----------|
+| 1 | **Inline code completion (Tab)** | Integrated | _Auto-trigger_ |
+| 2 | **Inline editing (Ctrl+K)** | Integrated | `Ctrl+K` |
+| 3 | **Multi-file agent mode** | Integrated | `Ctrl+Shift+E` |
+| 4 | **Diff preview before applying** | Integrated | _Automatic_ |
+| 5 | **@ mentions in chat** | Integrated | `@file:` `@symbol:` `@git` |
+| 6 | **Auto-context detection** | Integrated | _Automatic_ |
+| 7 | **Project rules (.contextforge-rules)** | Integrated | _Auto-loaded_ |
+| 8 | **Documentation indexing (@docs)** | Integrated | Command palette |
+| 9 | **Image input in chat** | Integrated | Drag & drop |
+| 10 | **Smart apply** | Integrated | Command palette |
+| 11 | **Auto linting after AI edits** | Integrated | _Automatic_ |
+| 12 | **Undo/redo AI changes** | Integrated | `Ctrl+Shift+Z` |
+| 13 | **Background indexing on save** | Integrated | _Automatic_ |
+| 14 | **Symbol-level navigation** | Integrated | Go-to-definition |
+| 15 | **Multi-cursor AI editing** | Integrated | Command palette |
+| 16 | **Web search in chat (@web)** | Integrated | _Automatic_ |
+| 17 | **Git diff context in chat** | Integrated | _Automatic_ |
+| 18 | **Conversation branching** | Integrated | Fork button |
+| 19 | **Privacy mode toggle** | Integrated | Status bar |
+| 20 | **Composer (long-running agent)** | Integrated | `Ctrl+Shift+P` |
 
-## 📋 Prerequisites
+## Quick Links
 
-- **Docker & Docker Compose**: For running services
-- **Python 3.9+**: For development and scripts
-- **Node.js 18+**: For VS Code extension development
-- **VS Code**: For extension usage
+- **[QUICKSTART.md](QUICKSTART.md)** -- Get running in 5 minutes
+- **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** -- Full API documentation
+- **[docs/RETRIEVAL_CONFIGURATION.md](docs/RETRIEVAL_CONFIGURATION.md)** -- Embedding models, code graph, task scopes
+- **[PUBLISHING.md](PUBLISHING.md)** -- VS Code Marketplace publishing and monetisation guide
+- **[DATA_PRIVACY.md](DATA_PRIVACY.md)** -- Privacy and security details
 
-### Optional LLM Backends
+---
 
-- **Ollama**: Local LLM inference (recommended for privacy)
-- **LM Studio**: Alternative local LLM platform
-- **API Keys**: For remote LLM providers (OpenAI, Anthropic, Mistral)
+## Core Capabilities
 
-## 🏃 Quick Start
+### AI-Powered Editor Features
 
-### 1. Clone and Setup
+- **Inline Code Completion (Tab)** -- Ghost-text autocomplete as you type, powered by your configured LLM. Suggests single lines or multi-line blocks. Toggle with `contextforge.enableInlineCompletion`.
+- **Inline Editing (Ctrl+K)** -- Select code, type a natural language instruction, get an inline diff preview. Accept or reject with one click.
+- **Multi-File Agent Mode** -- Describe a task, the AI reads your codebase, plans changes across multiple files, and shows you a diff for each file before applying.
+- **Composer (Long-Running Agent)** -- A persistent background agent for complex multi-step tasks. Plans, executes, and delivers file changes with status polling.
+- **Smart Apply** -- Paste a code block and the AI figures out where in the file to place it, even if line numbers have shifted. Shows diff preview before applying.
+- **Multi-Cursor AI Editing** -- Describe a pattern-based edit and the AI applies changes at every matching location simultaneously.
+
+### Context Engine
+
+- **Auto-Context Detection** -- Automatically detects which files and symbols are relevant based on your editor state (current file, selection, open tabs, cursor position).
+- **@ Mentions in Chat** -- Type `@file:path`, `@symbol:name`, `@folder:dir`, `@web:query`, `@docs:label`, or `@git:diff` to attach specific context.
+- **Project Rules** -- Create a `.contextforge-rules` file in your workspace root to set coding standards, conventions, and instructions that the AI follows for every request.
+- **Documentation Indexing** -- Index external library docs (API references, framework guides) and search them with `@docs:label`.
+- **Git Diff Context** -- The current `git diff` is automatically included as context in all queries and chat messages.
+- **Background Indexing** -- Files are incrementally re-indexed on save (2-second debounce) so the index stays fresh.
+
+### Search & Retrieval
+
+- **AST-Aware Chunking** -- Tree-sitter support for 14 languages. Code is chunked into semantic units (functions, classes, imports), not arbitrary character splits.
+- **Hybrid Search** -- Dense vector search (FAISS) combined with BM25 lexical search using Reciprocal Rank Fusion.
+- **Code Graph** -- Tracks imports, function calls, class inheritance, and containment as graph edges for relationship-aware retrieval.
+- **Task-Scoped Retrieval** -- Different search strategies per task: `find_bugs`, `explain`, `refactor`, `test`.
+- **Cross-Encoder Re-Ranking** -- Optional re-ranking with a cross-encoder model for higher relevance.
+- **Hierarchical Retrieval** -- Multi-stage module-to-file-to-function retrieval for large codebases.
+- **Token Budgeting** -- Context is trimmed to fit within the LLM's context window (configurable via `RAG_CONTEXT_BUDGET`).
+
+### Editor Integration
+
+- **Diff Preview** -- All AI edits show as a side-by-side diff that you accept or reject before changes are applied.
+- **Undo/Redo AI Changes** -- Every AI edit creates a checkpoint. Restore any previous state via `Ctrl+Shift+Z`.
+- **Auto Linting** -- After AI edits, the extension checks for lint errors and offers to have the AI fix them automatically.
+- **Symbol Navigation** -- AI-powered go-to-definition and find-references using the code graph.
+- **Conversation Branching** -- Fork a chat conversation to explore alternative approaches without losing the original thread.
+- **Privacy Mode** -- One-click toggle in the status bar. When enabled, code is only sent to local LLMs.
+
+### LLM & Search Providers
+
+- **8 LLM Providers** -- Ollama, LM Studio, OpenAI, Anthropic, Mistral, DeepSeek, Grok (xAI), Groq
+- **Web Search** -- SerpAPI, Bing, Google CSE with content scraping
+- **Model-Agnostic Embeddings** -- Any sentence-transformers model via env vars
+- **Image Analysis** -- CLIP, BLIP, ViT for local image understanding (zero API cost)
+
+---
+
+## Prerequisites
+
+- **Docker & Docker Compose** -- For running services
+- **Python 3.9+** -- For development and scripts
+- **Node.js 18+** -- For VS Code extension development
+- **VS Code** -- For extension usage
+
+### Optional
+
+- **Ollama** -- Local LLM inference (recommended for privacy)
+- **LM Studio** -- Alternative local LLM platform
+- **API Keys** -- For cloud LLM providers (OpenAI, Anthropic, etc.)
+
+---
+
+## Quick Start
+
+See **[QUICKSTART.md](QUICKSTART.md)** for a detailed step-by-step guide.
 
 ```bash
-git clone https://github.com/your-org/contextforge.git
+# 1. Clone and configure
+git clone https://github.com/contextforge/contextforge.git
 cd contextforge
 cp .env.example .env
-```
+# Edit .env to set your LLM provider
 
-### 2. Configure LLM Provider
+# 2. Start all services
+docker-compose up --build -d
 
-ContextForge requires at least one LLM provider. Choose one:
-
-**Option A: Ollama (Recommended - Local & Private)**
-```bash
-# Install Ollama from https://ollama.ai
-# Run: ollama serve
-# Then configure in .env:
-LLM_PRIORITY=ollama
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=mistral
-```
-
-**Option B: OpenAI (Remote)**
-```bash
-LLM_PRIORITY=openai
-OPENAI_API_KEY=sk-your-key-here
-```
-
-**Option C: Anthropic Claude (Remote)**
-```bash
-LLM_PRIORITY=anthropic
-ANTHROPIC_API_KEY=your-key-here
-```
-
-**Option D: LM Studio (Local Alternative)**
-```bash
-LLM_PRIORITY=lm_studio
-LM_STUDIO_URL=http://localhost:8085/generate
-```
-
-### 3. Start Services
-
-```bash
-make dev
-```
-
-This starts all services:
-- API Gateway: http://localhost:8080 (Docker) or http://localhost:8082 (local dev)
-- Vector Index: http://localhost:8001
-- Connector: http://localhost:8002
-- Preprocessor: http://localhost:8003
-- Web Fetcher: http://localhost:8004
-- Terminal Executor: http://localhost:8006
-
-> **Note**: Docker Compose uses port 8080 for the API Gateway. Local development uses port 8082 to avoid conflicts.
-
-### 4. Ingest Example Repository
-
-```bash
-make ingest-example
-```
-
-### 5. Query the System
-
-```bash
-make query-example --q "How does authentication work?"
-```
-
-## 📦 Installation Options
-
-### Option 1: Docker Compose (Recommended)
-
-```bash
-# Start all services
-make dev
-
-# Or manually
-docker-compose up --build
-```
-
-### Option 2: Local Development (Windows)
-
-Run each service in a separate CMD window:
-
-**Step 1: Install Ollama and start it**
-```cmd
-# Download from https://ollama.ai
-ollama serve
-# (If you see "bind: Only one usage of each socket address..." it's already running - that's OK!)
-```
-
-**Step 2: Create virtual environment (one time setup)**
-```cmd
-cd C:\path\to\ContextForge
-python -m venv venv
-.\venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-**Step 3: Start all services (each in separate CMD window)**
-
-**CMD Window 1 - Vector Index (port 8001)**
-```cmd
-cd /d C:\path\to\ContextForge
-.\venv\Scripts\activate
-set PYTHONPATH=services\vector_index;.
-python -m uvicorn services.vector_index.app:app --host 0.0.0.0 --port 8001
-```
-
-**CMD Window 2 - Connector (port 8002)**
-```cmd
-cd /d C:\path\to\ContextForge
-.\venv\Scripts\activate
-set PYTHONPATH=services\connector;.
-python -m uvicorn services.connector.app:app --host 0.0.0.0 --port 8002
-```
-
-**CMD Window 3 - Preprocessor (port 8003)**
-```cmd
-cd /d C:\path\to\ContextForge
-.\venv\Scripts\activate
-set PYTHONPATH=services\preprocessor;.
-python -m uvicorn services.preprocessor.app:app --host 0.0.0.0 --port 8003
-```
-
-**CMD Window 4 - API Gateway (port 8082)**
-```cmd
-cd /d C:\path\to\ContextForge
-.\venv\Scripts\activate
-set PYTHONPATH=services\api_gateway;.
-set VECTOR_INDEX_URL=http://localhost:8001
-set CONNECTOR_URL=http://localhost:8002
-set PREPROCESSOR_URL=http://localhost:8003
-python -m uvicorn services.api_gateway.app:app --host 0.0.0.0 --port 8082
-```
-
-**Step 4: Install VS Code Extension**
-```cmd
+# 3. Install the VS Code extension
 cd vscode-extension
-npm install
-npm run compile
-npx vsce package
+npm install && npm run compile && npx vsce package
 code --install-extension contextforge-1.0.0.vsix
+
+# 4. Set contextforge.apiUrl to http://localhost:8080 in VS Code settings
+
+# 5. Ingest your workspace (Ctrl+Shift+I) and start asking questions (Ctrl+Shift+C)
 ```
 
-**Step 5: Configure Extension**
-- Open VS Code Settings (`Ctrl+,`)
-- Set `contextforge.apiUrl` to `http://localhost:8082`
+---
 
-### Service Ports Summary
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| Vector Index | 8001 | FAISS vector search and embeddings |
-| Connector | 8002 | File system reading |
-| Preprocessor | 8003 | Code chunking |
-| API Gateway | 8082 | Main API (orchestrates all services) |
-| Ollama | 11434 | LLM inference |
-
-### Option 3: Local Development (Linux/Mac)
-
-```bash
-# Create virtual environment
-make venv
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-
-# Start individual services (each in separate terminal)
-export PYTHONPATH=services/vector_index:.
-uvicorn services.vector_index.app:app --host 0.0.0.0 --port 8001
-
-export PYTHONPATH=services/connector:.
-uvicorn services.connector.app:app --host 0.0.0.0 --port 8002
-
-export PYTHONPATH=services/preprocessor:.
-uvicorn services.preprocessor.app:app --host 0.0.0.0 --port 8003
-
-export PYTHONPATH=services/api_gateway:.
-export VECTOR_INDEX_URL=http://localhost:8001
-export CONNECTOR_URL=http://localhost:8002
-export PREPROCESSOR_URL=http://localhost:8003
-uvicorn services.api_gateway.app:app --host 0.0.0.0 --port 8082
-```
-
-## 🔧 Usage
-
-### Command Line Interface
-
-#### Ingest a Repository
-
-```bash
-python scripts/ingest_example.py --path /path/to/your/repo
-```
-
-#### Query the System
-
-```bash
-python scripts/query_example.py --query "How is user authentication implemented?"
-```
-
-#### Test LLM Adapters
-
-```bash
-python scripts/test_llm.py
-```
-
-### VS Code Extension
-
-1. **Install Extension**:
-   ```bash
-   cd vscode-extension
-   npm install
-   npm run package
-   code --install-extension contextforge-1.0.0.vsix
-   ```
-
-2. **Configure API URL**: Set `contextforge.apiUrl` in VS Code settings
-
-3. **Ingest Workspace**: `Ctrl+Shift+I` or "ContextForge: Ingest Workspace"
-
-4. **Ask Questions**: `Ctrl+Shift+C` or "ContextForge: Ask"
-
-5. **Execute Terminal Commands**: `Ctrl+Shift+T` or "ContextForge: Execute Terminal Command"
-
-6. **Get Command Suggestions**: `Ctrl+Shift+S` or "ContextForge: Suggest Terminal Command"
-
-7. **View Active Processes**: "ContextForge: Show Terminal Processes"
-
-8. **Toggle Auto Terminal Mode**: `Ctrl+Shift+A` or "ContextForge: Toggle Auto Terminal Mode"
-   - ⚠️ **SECURITY WARNING**: Auto mode executes AI-suggested commands automatically
-   - Only executes commands from your configured whitelist
-   - Shows warning dialog before enabling
-   - Status bar indicator shows current mode
-
-9. **Open AI Chat**: `Ctrl+Shift+H` or "ContextForge: Open Chat"
-   - Interactive chat panel in the Explorer sidebar
-   - Multi-turn conversations with context awareness
-   - Markdown rendering with syntax highlighting
-   - Copy and insert code snippets directly into editor
-   - Chat history persistence across sessions
-   - Session management with multiple chat threads
-
-10. **Git Operations**: Comprehensive Git integration with AI assistance
-    - **Git Status**: `Ctrl+Shift+G S` - View repository status and changes
-    - **Git Commit**: `Ctrl+Shift+G C` - Commit with AI-generated messages
-    - **Git Push**: `Ctrl+Shift+G P` - Push changes to remote repository
-    - **Git Pull**: Pull latest changes from remote repository
-    - **Branch Management**: Create, switch, and delete branches
-    - **Repository Health**: Automated repository health checks
-
-11. **GitHub Integration**: Seamless GitHub workflow integration
-    - **Create Pull Requests**: `Ctrl+Shift+G R` - Create PRs with AI assistance
-    - **View Issues**: Browse and manage GitHub issues
-    - **Repository Operations**: Clone, fork, and manage repositories
-    - **Automatic PR descriptions**: AI-generated PR titles and descriptions
-
-12. **File/Media Attachments**: Upload and analyze files in chat
-    - **Drag-and-drop support**: Simply drag files into the chat panel
-    - **Image analysis**: AI-powered image recognition and description
-    - **Document extraction**: Automatic text extraction from PDFs and Word documents
-    - **File previews**: Inline previews of images and document content
-    - **Multiple file types**: Support for images, PDFs, Word docs, text files, and more
-
-13. **AI Prompt Generator/Enhancer**: Intelligent prompt optimization and templates
-    - **Prompt Enhancement**: AI-powered suggestions to improve prompt clarity and effectiveness
-    - **Prompt Templates**: Pre-built templates for common tasks (code review, debugging, documentation, etc.)
-    - **Context Enhancement**: Automatically add relevant workspace context to prompts
-    - **Prompt History**: Save and retrieve previously used prompts
-    - **Prompt Favorites**: Mark and organize your best prompts for quick access
-
-### REST API
-
-#### Ingest Repository
-
-```bash
-curl -X POST "http://localhost:8080/ingest" \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/path/to/repo", "recursive": true}'
-```
-
-#### Query System
-
-```bash
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "authentication implementation", "max_tokens": 512}'
-```
-
-#### Query with Task-Scoped Retrieval
-
-```bash
-# "find_bugs" scope prioritizes function bodies, follows CALLS/IMPORTS edges
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "potential null pointer issues", "task_scope": "find_bugs"}'
-
-# "explain" scope expands to parent classes and documentation
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "how does the auth middleware work?", "task_scope": "explain"}'
-```
-
-#### Query with Auto-Terminal Execution
-
-```bash
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "How do I run tests for this project?",
-    "auto_terminal_mode": true,
-    "auto_terminal_timeout": 30,
-    "auto_terminal_whitelist": ["npm test", "python -m pytest", "git status"]
-  }'
-```
-
-#### AI Chat Conversation
-
-```bash
-curl -X POST "http://localhost:8080/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Hello! Can you help me understand this codebase?"},
-      {"role": "assistant", "content": "I'd be happy to help! What specific part would you like to explore?"},
-      {"role": "user", "content": "How does the authentication system work?"}
-    ],
-    "max_tokens": 1024,
-    "enable_web_search": false,
-    "enable_context": true
-  }'
-```
-
-#### Git Commit Message Generation
-
-```bash
-curl -X POST "http://localhost:8080/git/commit-message" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "diff": "diff --git a/src/feature.py b/src/feature.py\n...",
-    "staged_files": ["src/feature.py", "tests/test_feature.py"],
-    "branch": "feature/improve-validation",
-    "recent_commits": [
-      "feat: add input validation",
-      "fix: handle edge cases",
-      "docs: update API documentation"
-    ]
-  }'
-```
-
-#### File Upload and Analysis
-
-```bash
-# Upload a file for analysis
-curl -X POST "http://localhost:8080/files/upload" \
-  -F "file=@/path/to/file.pdf"
-
-# Response includes:
-# - File ID for reference
-# - Extracted text (for PDFs, documents)
-# - Image analysis (for images)
-# - Base64 encoded file data
-```
-
-### Vision Model Strategy
-
-ContextForge uses a **cost-effective, tiered vision model approach** for image analysis:
-
-#### Model Priority (Fastest to Most Detailed)
-
-1. **CLIP (Primary)** - OpenAI's Contrastive Language-Image Pre-training
-   - ✅ **Cost**: Free (open-source)
-   - ✅ **Speed**: Fast (~100-200ms per image)
-   - ✅ **Accuracy**: Good general understanding
-   - ✅ **Memory**: ~350MB
-   - **Use case**: Quick image classification and understanding
-
-2. **BLIP (Secondary)** - Salesforce's Bootstrapping Language-Image Pre-training
-   - ✅ **Cost**: Free (open-source)
-   - ✅ **Speed**: Medium (~300-500ms per image)
-   - ✅ **Accuracy**: Excellent captions and descriptions
-   - ✅ **Memory**: ~500MB
-   - **Use case**: Detailed image descriptions and captions
-
-3. **Google ViT (Tertiary)** - Vision Transformer
-   - ✅ **Cost**: Free (open-source)
-   - ✅ **Speed**: Medium (~200-400ms per image)
-   - ✅ **Accuracy**: Good classification
-   - ✅ **Memory**: ~300MB
-   - **Use case**: Fallback classification
-
-4. **Basic Analysis (Fallback)** - Always available
-   - ✅ **Cost**: Free
-   - ✅ **Speed**: Instant
-   - ✅ **Accuracy**: Image properties only
-   - **Use case**: When all models fail
-
-#### Cost Comparison
-
-| Model | Cost | Speed | Quality | Memory |
-|-------|------|-------|---------|--------|
-| CLIP | Free | ⚡⚡⚡ | ⭐⭐⭐⭐ | 350MB |
-| BLIP | Free | ⚡⚡ | ⭐⭐⭐⭐⭐ | 500MB |
-| ViT | Free | ⚡⚡ | ⭐⭐⭐⭐ | 300MB |
-| Basic | Free | ⚡⚡⚡⚡⚡ | ⭐⭐ | 0MB |
-
-#### Why This Approach?
-
-- **Zero API Costs**: All models run locally, no cloud API charges
-- **Privacy**: Images never leave your machine
-- **Reliability**: Multiple fallbacks ensure analysis always works
-- **Performance**: Fastest models tried first
-- **Flexibility**: Easy to swap models or add new ones
-
-## Prompt Generator/Enhancer
-
-The AI Prompt Generator/Enhancer helps you write better prompts for AI models. Access it via the **ContextForge Prompt Generator** panel in the Explorer sidebar.
-
-### Features
-
-#### 1. Prompt Enhancement
-- **AI-Powered Suggestions**: Get intelligent suggestions to improve your prompts
-- **Clarity Improvements**: Make prompts more specific and effective
-- **Style Options**: Choose professional, technical, or casual tone
-- **Context Awareness**: Add workspace context for better suggestions
-
-#### 2. Prompt Templates
-Pre-built templates for common development tasks:
-- Code Review, Debug Issue, Generate Documentation
-- Refactor Code, Generate Tests, Explain Code
-- API Design Review, Performance Optimization
-
-#### 3. Prompt History
-- **Auto-Save**: Prompts are automatically saved
-- **Quick Access**: View all previously used prompts
-- **Favorites**: Mark important prompts as favorites
-- **Delete**: Remove prompts you no longer need
-
-#### 4. Context Enhancement
-Automatically add relevant context from your workspace
-
-#### Execute Terminal Command
-
-```bash
-curl -X POST "http://localhost:8080/terminal/execute" \
-  -H "Content-Type: application/json" \
-  -d '{"command": "npm install", "working_directory": "/path/to/project", "timeout": 60}'
-```
-
-#### Get Command Suggestions
-
-```bash
-curl -X POST "http://localhost:8080/terminal/suggest" \
-  -H "Content-Type: application/json" \
-  -d '{"task_description": "install project dependencies", "working_directory": "/path/to/project"}'
-```
-
-#### Stream Command Execution
-
-```bash
-curl -X POST "http://localhost:8080/terminal/execute-stream" \
-  -H "Content-Type: application/json" \
-  -d '{"command": "npm run build", "stream": true}' \
-  --no-buffer
-```
-
-## 🏗️ Architecture
+## Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   VS Code       │    │   Web Interface │    │   CLI Scripts   │
-│   Extension     │    │   (Future)      │    │   & Tools       │
-└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
-          │                      │                      │
-          └──────────────────────┼──────────────────────┘
-                                 │
-                    ┌─────────────▼─────────────┐
-                    │      API Gateway          │
-                    │  (Port 8080/8082)         │
-                    └─────────────┬─────────────┘
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        │                         │                         │
-┌───────▼────────┐    ┌───────────▼──────────┐    ┌────────▼────────┐
-│ Vector Index   │    │    Preprocessor      │    │   Connector     │
-│ (Port 8001)    │    │    (Port 8003)       │    │   (Port 8002)   │
-│ - FAISS        │    │ - Python AST         │    │ - File Scanner  │
-│ - Embeddings   │    │ - JS/TS Regex        │    │ - Encoding      │
-│ - Search       │    │ - Markdown           │    │ - Filtering     │
-└────────────────┘    └──────────────────────┘    └─────────────────┘
-        │                         │                         │
-        └─────────────────────────┼─────────────────────────┘
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        │                         │                         │
-┌───────▼────────┐    ┌───────────▼──────────┐    ┌────────▼────────┐
-│  Web Fetcher   │    │ Terminal Executor    │    │  LLM Providers  │
-│  (Port 8004)   │    │    (Port 8006)       │    │ (External APIs) │
-│ - URL Fetch    │    │ - Safe Execution     │    │ - Ollama        │
-│ - Caching      │    │ - Command Validation │    │ - OpenAI        │
-│ - Rate Limit   │    │ - Process Management │    │ - Anthropic     │
-└────────────────┘    └──────────────────────┘    └─────────────────┘
-                                  │
-                      ┌───────────▼──────────┐
-                      │     LLM Adapters     │
-                      │  - Ollama           │
-                      │  - LM Studio        │
-                      │  - OpenAI           │
-                      │  - Anthropic        │
-                      └─────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Client Layer                            │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│  VS Code     │  Web         │  CLI         │  REST API      │
+│  Extension   │  Frontend    │  Scripts     │  Clients       │
+│  (20 features│  (React)     │  (Python)    │  (curl, etc.)  │
+│  integrated) │              │              │                │
+└──────┬───────┴──────┬───────┴──────┬───────┴────────┬───────┘
+       │              │              │                │
+       └──────────────┴──────────────┴────────────────┘
+                              │
+               ┌──────────────▼──────────────┐
+               │       API Gateway           │
+               │   (Port 8080 / 8082)        │
+               │                             │
+               │  Core Routes:               │
+               │  /query, /chat, /ingest     │
+               │                             │
+               │  Feature Routes:            │
+               │  /completion, /inline-edit  │
+               │  /agent/execute, /composer  │
+               │  /smart-apply, /symbols     │
+               │  /docs/index, /docs/search  │
+               │  /multi-cursor-edit         │
+               └──────────────┬──────────────┘
+                              │
+       ┌──────────────────────┼──────────────────────┐
+       │                      │                      │
+┌──────▼───────┐    ┌─────────▼────────┐    ┌────────▼────────┐
+│ Vector Index │    │   Preprocessor   │    │    Connector    │
+│ (Port 8001)  │    │   (Port 8003)    │    │   (Port 8002)   │
+│              │    │                  │    │                 │
+│ - FAISS/HNSW │    │ - Tree-sitter    │    │ - File scanner  │
+│ - BM25       │    │   AST chunking   │    │ - Encoding      │
+│ - Code Graph │    │ - 14 languages   │    │ - Filtering     │
+│ - Reranker   │    │ - Relationships  │    │                 │
+│ - Embeddings │    │ - Regex fallback │    │                 │
+└──────────────┘    └──────────────────┘    └─────────────────┘
+       │                      │                      │
+       └──────────────────────┼──────────────────────┘
+                              │
+       ┌──────────────────────┼──────────────────────┐
+       │                      │                      │
+┌──────▼───────┐    ┌─────────▼────────┐    ┌────────▼────────┐
+│ Web Fetcher  │    │Terminal Executor │    │  LLM Providers  │
+│ (Port 8004)  │    │  (Port 8006)     │    │  (8 backends)   │
+│              │    │                  │    │                 │
+│ - URL fetch  │    │ - Safe execution │    │ - Ollama        │
+│ - Caching    │    │ - Whitelisting   │    │ - LM Studio     │
+│ - Rate limit │    │ - Process mgmt   │    │ - OpenAI        │
+│              │    │                  │    │ - Anthropic     │
+└──────────────┘    └──────────────────┘    │ - Mistral       │
+                                            │ - DeepSeek      │
+                                            │ - Grok (xAI)    │
+                                            │ - Groq          │
+                                            └─────────────────┘
 ```
 
 ### Data Flow
 
-1. **Ingestion**: Connector → Preprocessor (AST chunking + relationship extraction) → Vector Index (FAISS embeddings + Code Graph)
-2. **Query**: API Gateway → Vector Index (hybrid search + task-scope boost + graph expansion) + Web Fetcher → LLM → Response
-3. **Terminal Execution**: API Gateway → Terminal Executor → Command Execution → Response
-4. **Command Suggestions**: API Gateway → LLM → Terminal Command Suggestions
-5. **VS Code**: Extension → API Gateway → Services → Response → Webview
+1. **Ingestion**: Connector (scan) -> Preprocessor (AST chunking + relationships) -> Vector Index (FAISS + Code Graph + BM25)
+2. **Query/Chat**: API Gateway -> Vector Index (hybrid search + graph + reranking) + Web Search -> RAG Pipeline -> LLM -> Response
+3. **Inline Completion**: Extension -> `/completion` -> LLM (fast model) -> Ghost text
+4. **Inline Edit**: Extension -> `/inline-edit` -> LLM -> Diff preview -> Apply
+5. **Agent Mode**: Extension -> `/agent/execute` -> Plan + per-file diffs -> Review -> Apply
+6. **Composer**: Extension -> `/composer/start` -> Background thread -> Poll status -> Review changes
 
-## 🔒 Privacy & Security
+---
 
-### Privacy Modes
+## VS Code Extension Commands
 
-- **Local**: All processing happens locally, no external API calls
-- **Hybrid**: Local processing with remote LLM fallback
-- **Remote**: Uses remote LLMs for generation
+| Command | Shortcut | Description |
+|---------|----------|-------------|
+| Ask ContextForge | `Ctrl+Shift+C` | Query your codebase |
+| Ingest Workspace | `Ctrl+Shift+I` | Index the current workspace |
+| Open Chat | `Ctrl+Shift+H` | Open the AI chat panel |
+| Inline Edit | `Ctrl+K` | Edit selected code with AI (requires selection) |
+| Agent Mode | `Ctrl+Shift+E` | Multi-file AI editing |
+| Composer | `Ctrl+Shift+P` | Long-running agent for complex tasks |
+| Undo AI Change | `Ctrl+Shift+Z` | Restore a checkpoint from before an AI edit |
+| Toggle Privacy | Status bar | Switch between local-only and cloud LLMs |
+| Smart Apply | Command palette | Apply clipboard code at the right location |
+| Multi-Cursor Edit | Command palette | AI-powered multi-position editing |
+| Index Docs | Command palette | Index external documentation from a URL |
+| Toggle Auto Terminal | `Ctrl+Shift+A` | Enable/disable auto command execution |
+| Execute Terminal | `Ctrl+Shift+T` | Run a terminal command |
+| Suggest Terminal | `Ctrl+Shift+S` | Get AI command suggestions |
+| Git Status | `Ctrl+Shift+G S` | View repository status |
+| Git Commit | `Ctrl+Shift+G C` | Commit with AI-generated message |
+| Git Push | `Ctrl+Shift+G P` | Push to remote |
+| Create PR | `Ctrl+Shift+G R` | Create a GitHub pull request |
 
-### Security Features
+### Chat @ Mentions
 
-- Environment variable configuration (no secrets in code)
-- JWT-based authentication (example API)
-- Input validation and sanitization
-- Rate limiting and request size limits
-- CORS configuration
-- Docker container isolation
+Use these in the chat input to attach specific context:
 
-### Data Handling
+| Mention | Example | What it does |
+|---------|---------|-------------|
+| `@file:path` | `@file:src/auth.py` | Attaches file content |
+| `@symbol:name` | `@symbol:authenticate` | Looks up symbol definition |
+| `@folder:path` | `@folder:src/utils` | Lists folder contents |
+| `@git` | `@git:diff` or `@git:log` | Attaches git diff or log |
+| `@docs:query` | `@docs:react hooks` | Searches indexed documentation |
+| `@web:query` | `@web:python async` | Triggers web search |
 
-- **Code Analysis**: Processed locally, only relevant snippets sent to LLMs
-- **Vector Storage**: Stored in local Docker volumes
-- **Web Cache**: Cached locally with configurable TTL
-- **Logs**: Structured logging with sensitive data filtering
+---
 
-## 🧪 Testing
+## Project Rules
 
-### Run All Tests
+Create a `.contextforge-rules` file (or `.contextforge/rules.md`) in your workspace root:
 
-```bash
-make test
+```markdown
+# Project Rules for ContextForge
+
+## Code Style
+- Use TypeScript strict mode
+- Prefer functional components with hooks
+- Use camelCase for variables, PascalCase for components
+
+## Architecture
+- Follow clean architecture with use cases in /src/domain
+- Keep API routes thin, business logic in services
+- All database access through repository pattern
+
+## Testing
+- Write unit tests for all business logic
+- Use React Testing Library for component tests
+- Aim for 80%+ coverage
 ```
 
-### Individual Test Suites
+The rules are automatically loaded on startup and sent with every AI request (inline edit, chat, agent mode, composer).
+
+---
+
+## Configuration
+
+### VS Code Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `contextforge.apiUrl` | `http://localhost:8082` | API Gateway URL |
+| `contextforge.enableInlineCompletion` | `true` | Enable Tab completion |
+| `contextforge.enableAutoLint` | `true` | Auto-check for lint errors after AI edits |
+| `contextforge.privacyMode` | `false` | Only use local LLMs |
+| `contextforge.enableWebSearch` | `true` | Include web results in context |
+| `contextforge.incrementalIndexing` | `true` | Re-index files on save |
+| `contextforge.autoTerminalMode` | `false` | Auto-execute AI-suggested commands |
+| `contextforge.gitEnabled` | `true` | Enable Git integration |
+
+### Environment Variables
+
+See `.env.example` for the full list. Key variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PRIORITY` | `local,cloud` | LLM backend priority |
+| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama endpoint |
+| `EMBEDDING_MODEL` | `all-mpnet-base-v2` | Primary embedding model |
+| `CODE_EMBEDDING_MODEL` | `nomic-ai/CodeRankEmbed` | Code-specific embeddings |
+| `HYBRID_SEARCH_ENABLED` | `true` | Dense + lexical search |
+| `RERANK_ENABLED` | `false` | Cross-encoder re-ranking |
+| `RAG_CONTEXT_BUDGET` | `16384` | Max context tokens for RAG |
+| `MAX_OUTPUT_TOKENS` | `131072` | Max LLM output tokens |
+| `PRIVACY_MODE` | `true` | Default privacy setting |
+
+---
+
+## Service Ports
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| API Gateway | 8080 (Docker) / 8082 (local) | Main orchestration API |
+| Vector Index | 8001 | FAISS search, embeddings, code graph |
+| Connector | 8002 | File system scanning |
+| Preprocessor | 8003 | AST chunking (tree-sitter) |
+| Web Fetcher | 8004 | Web search and caching |
+| Terminal Executor | 8006 | Safe command execution |
+| Ollama | 11434 | Local LLM inference |
+
+---
+
+## Privacy & Security
+
+- **Privacy Mode** -- Toggle in the VS Code status bar. When enabled, no code leaves your machine.
+- **Local-First** -- All indexing, search, and embedding happens locally.
+- **JWT Auth** -- API supports JWT-based authentication.
+- **Rate Limiting** -- Configurable per-endpoint rate limits.
+- **CORS** -- Hardened CORS configuration.
+- **Input Validation** -- All inputs validated with Pydantic models.
+- **Docker Isolation** -- Each service runs in its own container.
+
+---
+
+## Testing
 
 ```bash
-# Python unit tests
+# All Python tests
 pytest tests/ -v
+
+# VS Code extension tests
+cd vscode-extension && npm test
 
 # Service integration tests
 docker-compose up -d
 python scripts/test_llm.py
 
-# VS Code extension tests
-cd vscode-extension && npm test
-
-# Linting and formatting
+# Linting
 make lint
-make format
 ```
 
-### Acceptance Tests
+---
 
-```bash
-# Test complete workflow
-make dev                                    # ✅ Services start
-make ingest-example                        # ✅ Ingestion works
-make query-example --q "API_TOKEN"        # ✅ Query returns results
-python scripts/test_llm.py               # ✅ LLM adapters work
-```
-
-## 🎯 Acceptance Criteria Validation
-
-The following acceptance tests validate that ContextForge meets all requirements:
-
-### ✅ Core Functionality Tests
-
-```bash
-# 1. Services start successfully
-make dev
-curl -f http://localhost:8080/health
-
-# 2. Example ingestion works
-make ingest-example
-# Should output: "✅ Ingested X chunks from examples/small-repo"
-
-# 3. Query returns local file results
-make query-example --q "API_TOKEN"
-# Should return results with file paths from examples/small-repo
-
-# 4. LLM provider is configured and working
-# Verify your LLM provider (Ollama, OpenAI, etc.) is running
-make query-example --q "test"
-# Should return results with LLM-generated insights
-
-# 5. VS Code extension installs and works
-cd vscode-extension && npm run package
-code --install-extension contextforge-1.0.0.vsix
-# Use Ctrl+Shift+I to ingest, Ctrl+Shift+C to query
-```
-
-### ✅ Technical Requirements
-
-- **Monorepo Structure**: ✅ Complete with services, scripts, examples
-- **Docker Compose**: ✅ All services containerized and orchestrated
-- **Makefile**: ✅ Common commands for dev, test, build, clean
-- **Unit Tests**: ✅ Comprehensive test suite with pytest
-- **CI/CD**: ✅ GitHub Actions workflow with multi-stage testing
-- **VS Code Extension**: ✅ Functional extension with webview and commands
-- **Documentation**: ✅ README with step-by-step instructions
-- **Example Data**: ✅ Complete small-repo example with multiple languages
-- **CLI Helpers**: ✅ Scripts for ingestion, querying, and LLM testing
-
-## 📚 Documentation
-
-### Core Documentation
-- **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and components
-- **[API Reference](docs/API_REFERENCE.md)**: Complete API documentation
-- **[Retrieval Configuration](docs/RETRIEVAL_CONFIGURATION.md)**: Embedding models, code graph, task scopes, and scalability
-- **[VS Code Extension](vscode-extension/README.md)**: Extension usage guide
-- **[Data Privacy](DATA_PRIVACY.md)**: Privacy and security details
-
-### Remote Agent Architecture (Planned Feature)
-- **[Architecture Overview](docs/REMOTE_AGENT_ARCHITECTURE.md)**: Distributed agent system design with diagrams and patterns
-- **[Implementation Guide](docs/REMOTE_AGENT_IMPLEMENTATION_GUIDE.md)**: Step-by-step implementation from Phase 1 to Phase 3
-- **[Usage Guide](docs/REMOTE_AGENT_USAGE_GUIDE.md)**: Practical examples and API usage patterns
-- **[Deployment Guide](docs/REMOTE_AGENT_DEPLOYMENT_GUIDE.md)**: Docker Compose, Kubernetes, and cloud deployment
-- **[Quick Reference](docs/REMOTE_AGENT_QUICK_REFERENCE.md)**: Quick commands and troubleshooting
-
-## 🛠️ Development
+## Development
 
 ### Project Structure
 
 ```
 contextforge/
-├── services/                 # Microservices
-│   ├── api_gateway/         # Main API and orchestration
-│   ├── vector_index/        # FAISS vector search
-│   ├── preprocessor/        # Language-aware chunking
-│   ├── connector/           # File system integration
-│   ├── web_fetcher/         # Web search and caching
-│   └── terminal_executor/   # Safe command execution
-├── vscode-extension/        # VS Code integration
-├── scripts/                 # CLI utilities
-├── examples/               # Example data and repos
+├── services/
+│   ├── api_gateway/        # Main API (core routes + feature_routes.py)
+│   ├── vector_index/       # FAISS, BM25, code graph, reranker
+│   ├── preprocessor/       # Tree-sitter chunking, language support
+│   ├── connector/          # File system scanning
+│   ├── web_fetcher/        # Web search and caching
+│   ├── terminal_executor/  # Safe command execution
+│   ├── core/               # Diff engine, multi-mode agent, safety
+│   ├── retrieval/          # Hierarchical retriever
+│   ├── config/             # Unified configuration
+│   └── tools/              # File editor, task manager, diagnostics
+├── vscode-extension/       # VS Code integration (20 features)
+├── web-frontend/           # React web UI
+├── scripts/                # CLI utilities
+├── examples/               # Example repos
 ├── tests/                  # Test suites
 ├── docs/                   # Documentation
-└── .github/workflows/      # CI/CD pipeline
+└── docker-compose.yml      # Service orchestration
 ```
 
 ### Adding New Features
 
-1. **New Language Support**: Extend `lang_chunkers.py` (tree-sitter is auto-detected for supported languages)
-2. **New LLM Provider**: Add adapter to `llm_client.py`
-3. **New Embedding Model**: Set `EMBEDDING_MODEL` / `CODE_EMBEDDING_MODEL` env var (any sentence-transformers model)
-4. **New Search Provider**: Extend `search_adapter.py`
-5. **New Task Scope**: Add to `services/vector_index/task_scopes.py`
-6. **New Endpoints**: Add to `api_gateway/app.py`
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 🚀 Deployment
-
-### Production Considerations
-
-- Use PostgreSQL instead of SQLite for scalability
-- Configure Redis for caching and session storage
-- Set up proper logging and monitoring
-- Use secrets management for API keys
-- Configure reverse proxy (nginx) for SSL termination
-- Set up backup and disaster recovery
-
-### Environment Variables
-
-See `.env.example` for complete configuration options:
-
-- **LLM Configuration**: `LLM_PRIORITY`, API keys, `LLM_TIMEOUT` (default 300s)
-- **Embedding Models**: `EMBEDDING_MODEL`, `CODE_EMBEDDING_MODEL`, `QUERY_PREFIX`, `DOCUMENT_PREFIX`
-- **Search Configuration**: `ENABLE_WEB_SEARCH`, search API keys
-- **Scalability Limits**: `MAX_OUTPUT_TOKENS` (default 128k), `MAX_PROMPT_LENGTH` (default 2M chars), `LLM_REQUEST_TIMEOUT`
-- **Privacy Settings**: `PRIVACY_MODE`
-- **Service URLs**: Individual service endpoints
-- **Logging**: `LOG_LEVEL`, `LOG_FORMAT`
-- **Auto-Terminal**: Configure automatic command execution settings
-
-### Auto-Terminal Configuration
-
-Configure auto-terminal execution in VS Code settings:
-
-```json
-{
-  "contextforge.autoTerminalMode": false,
-  "contextforge.autoTerminalTimeout": 30,
-  "contextforge.autoTerminalWhitelist": [
-    "git status",
-    "git log --oneline -10",
-    "npm test",
-    "npm run test",
-    "python -m pytest",
-    "pytest",
-    "ls",
-    "pwd",
-    "cat package.json",
-    "python --version",
-    "node --version",
-    "npm --version"
-  ]
-}
-```
-
-**Security Considerations:**
-- Only enable auto-terminal mode if you trust the AI responses
-- Carefully review your whitelist - only include safe, read-only commands
-- Commands not in the whitelist will be blocked
-- All executions are logged and displayed in the webview
-- Use timeouts to prevent long-running commands
-
-## 📚 Documentation
-
-### Core Documentation
-
-- **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and component overview
-- **[API Reference](docs/API_REFERENCE.md)**: Complete API endpoint documentation
-- **[Retrieval Configuration](docs/RETRIEVAL_CONFIGURATION.md)**: Embedding models, code graph, task scopes, scalability limits
-- **[Remote Agent Architecture](docs/REMOTE_AGENT_ARCHITECTURE.md)**: Distributed agent system design (planned feature)
-
-### Remote Agent Support (Planned)
-
-ContextForge is designed to support distributed processing through a Remote Agent Architecture. This planned feature will enable:
-
-- **Horizontal Scaling**: Distribute workloads across multiple machines
-- **Load Balancing**: Intelligent task distribution across agents
-- **Fault Tolerance**: Automatic failover and recovery
-- **Specialization**: Deploy specialized agents for specific tasks
-
-For detailed information about the planned remote agent architecture, including system design, communication patterns, deployment strategies, and implementation roadmap, see [Remote Agent Architecture Documentation](docs/REMOTE_AGENT_ARCHITECTURE.md).
-
-## 🤝 Support
-
-- **Issues**: Report bugs and feature requests on GitHub
-- **Discussions**: Join community discussions
-- **Documentation**: Comprehensive guides in `/docs`
-- **Examples**: Working examples in `/examples`
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **FAISS**: Facebook AI Similarity Search
-- **sentence-transformers**: Sentence embedding models
-- **FastAPI**: Modern Python web framework
-- **Ollama**: Local LLM inference platform
-- **VS Code**: Extensible code editor
+1. **New LLM Provider** -- Add adapter to `services/api_gateway/llm_client.py`
+2. **New Language** -- Add tree-sitter grammar to `services/preprocessor/lang_chunkers.py`
+3. **New Embedding Model** -- Set `EMBEDDING_MODEL` env var (any sentence-transformers model)
+4. **New Task Scope** -- Add to `services/vector_index/task_scopes.py`
+5. **New API Endpoint** -- Add to `services/api_gateway/feature_routes.py`
+6. **New VS Code Command** -- Add to `vscode-extension/src/extension.ts` and `package.json`
 
 ---
 
-**ContextForge** - Intelligent code context at your fingertips 🔍✨
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [QUICKSTART.md](QUICKSTART.md) | Get running in 5 minutes |
+| [PUBLISHING.md](PUBLISHING.md) | VS Code Marketplace + monetisation |
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Full API endpoint documentation |
+| [docs/RETRIEVAL_CONFIGURATION.md](docs/RETRIEVAL_CONFIGURATION.md) | Embeddings, code graph, task scopes |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design overview |
+| [DATA_PRIVACY.md](DATA_PRIVACY.md) | Privacy and security details |
+| [docs/REMOTE_AGENT_ARCHITECTURE.md](docs/REMOTE_AGENT_ARCHITECTURE.md) | Distributed agent system |
+
+---
+
+## License
+
+MIT License -- see [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+
+- **FAISS** -- Facebook AI Similarity Search
+- **Tree-sitter** -- Incremental parsing for 14+ languages
+- **sentence-transformers** -- Embedding models
+- **FastAPI** -- Modern Python web framework
+- **Ollama** -- Local LLM inference
+
+---
+
+**ContextForge** -- A complete AI coding assistant you own and control.

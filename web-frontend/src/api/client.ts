@@ -13,11 +13,22 @@ export interface ApiError {
   status?: number;
 }
 
+export interface EditorContext {
+  current_file?: string;
+  current_selection?: string;
+  cursor_line?: number;
+  open_files?: string[];
+  recent_files?: string[];
+  git_diff?: string;
+}
+
 export interface QueryRequest {
   query: string;
   max_tokens?: number;
   enable_web_search?: boolean;
   top_k?: number;
+  task_scope?: string;
+  editor_context?: EditorContext;
 }
 
 export interface QueryResponse {
@@ -48,10 +59,105 @@ export interface ChatMessage {
   timestamp?: number;
 }
 
+export interface Attachment {
+  name: string;
+  type: string;
+  data?: string;
+  extracted_text?: string;
+}
+
 export interface ChatRequest {
   messages: ChatMessage[];
   conversation_id?: string;
   enable_context?: boolean;
+  editor_context?: EditorContext;
+  attachments?: Attachment[];
+  resolved_mentions?: string;
+  project_rules?: string;
+  privacy_mode?: boolean;
+}
+
+export interface CompletionRequest {
+  prefix: string;
+  suffix?: string;
+  language?: string;
+  file_path?: string;
+  max_tokens?: number;
+  privacy_mode?: boolean;
+}
+
+export interface CompletionResponse {
+  completion: string;
+  model: string;
+  latency_ms: number;
+}
+
+export interface InlineEditRequest {
+  code: string;
+  instruction: string;
+  language?: string;
+  file_path?: string;
+  context_before?: string;
+  context_after?: string;
+  project_rules?: string;
+  privacy_mode?: boolean;
+}
+
+export interface InlineEditResponse {
+  edited_code: string;
+  explanation: string;
+  model: string;
+}
+
+export interface AgentExecuteRequest {
+  task: string;
+  repo_path: string;
+  mode?: string;
+  project_rules?: string;
+  privacy_mode?: boolean;
+  dry_run?: boolean;
+}
+
+export interface FileChange {
+  path: string;
+  diff: string;
+  newContent: string;
+  action: string;
+}
+
+export interface AgentExecuteResponse {
+  changes: FileChange[];
+  plan: string;
+  status: string;
+}
+
+export interface SmartApplyRequest {
+  file_path: string;
+  file_content: string;
+  code_block: string;
+  language?: string;
+}
+
+export interface SmartApplyResponse {
+  start_line: number;
+  end_line: number;
+  replacement: string;
+  new_content: string;
+  confidence: number;
+}
+
+export interface SymbolLookupRequest {
+  symbol: string;
+  file_path?: string;
+  line?: number;
+  kind?: 'definition' | 'references';
+}
+
+export interface ComposerStartRequest {
+  task: string;
+  repo_path: string;
+  project_rules?: string;
+  privacy_mode?: boolean;
 }
 
 export interface ChatResponse {
@@ -312,6 +418,74 @@ class ApiClient {
       throw new Error(`Upload failed: ${response.statusText}`);
     }
     return response.json();
+  }
+
+  // Inline Completion (#1)
+  async completion(request: CompletionRequest): Promise<CompletionResponse> {
+    return this.request<CompletionResponse>('/completion', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  // Inline Edit (#2)
+  async inlineEdit(request: InlineEditRequest): Promise<InlineEditResponse> {
+    return this.request<InlineEditResponse>('/inline-edit', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  // Agent Mode (#3)
+  async agentExecute(request: AgentExecuteRequest): Promise<AgentExecuteResponse> {
+    return this.request<AgentExecuteResponse>('/agent/execute', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  // Smart Apply (#10)
+  async smartApply(request: SmartApplyRequest): Promise<SmartApplyResponse> {
+    return this.request<SmartApplyResponse>('/smart-apply', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  // Symbol Lookup (#14)
+  async symbolLookup(request: SymbolLookupRequest) {
+    return this.request('/symbols/lookup', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  // Docs Index (#8)
+  async indexDocs(url: string, label?: string) {
+    return this.request('/docs/index', {
+      method: 'POST',
+      body: JSON.stringify({ url, label: label || url, recursive: true }),
+    });
+  }
+
+  // Docs Search (#8)
+  async searchDocs(query: string, topK = 5) {
+    return this.request('/docs/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+  }
+
+  // Composer (#20)
+  async composerStart(request: ComposerStartRequest) {
+    return this.request('/composer/start', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async composerStatus(sessionId: string) {
+    return this.request(`/composer/status/${sessionId}`);
   }
 
   isConnected(): boolean {

@@ -265,6 +265,34 @@ class CodeGraph:
             logger.error(f"Failed to load code graph: {e}")
             return False
 
+    def remove_by_file(self, file_path: str) -> int:
+        """Remove all chunks that belong to a given file path.
+
+        This requires chunk IDs to contain the file path or for the caller
+        to have stored it.  We do a best-effort sweep of known chunk IDs.
+        """
+        removed = 0
+        chunk_ids_to_remove = set()
+
+        for chunk_id in list(self._edges.keys()):
+            if file_path in chunk_id:
+                chunk_ids_to_remove.add(chunk_id)
+
+        for chunk_id in chunk_ids_to_remove:
+            self._edges.pop(chunk_id, None)
+            symbol = self._chunk_to_symbol.pop(chunk_id, None)
+            if symbol and symbol in self._symbol_to_chunks:
+                self._symbol_to_chunks[symbol].discard(chunk_id)
+                if not self._symbol_to_chunks[symbol]:
+                    del self._symbol_to_chunks[symbol]
+            self._reverse_edges.pop(chunk_id, None)
+            removed += 1
+
+        if removed:
+            self.rebuild_reverse_index()
+
+        return removed
+
     def clear(self) -> None:
         """Clear all graph data."""
         self._edges.clear()

@@ -1,61 +1,46 @@
 # ContextForge API Reference
 
 ## Base URL
+
 ```
-http://localhost:8080
+http://localhost:8080      # Docker
+http://localhost:8082      # Local development
 ```
 
 ## Authentication
-Currently, ContextForge operates without authentication for local development. In production deployments, implement appropriate authentication mechanisms.
 
-## Common Response Format
+ContextForge operates without authentication for local development. In production, implement JWT-based authentication via the `Authorization: Bearer <token>` header.
 
-### Success Response
-```json
-{
-  "data": { ... },
-  "meta": {
-    "timestamp": "2024-01-01T00:00:00Z",
-    "latency_ms": 150,
-    "version": "1.0.0"
-  }
-}
-```
-
-### Error Response
-```json
-{
-  "error": "Error description",
-  "code": "ERROR_CODE",
-  "details": { ... },
-  "timestamp": "2024-01-01T00:00:00Z"
-}
-```
+---
 
 ## Core Endpoints
 
-### Query System
+### POST /query
 
-#### POST /query
-Main question answering endpoint using RAG pipeline.
+Main question-answering endpoint using the RAG pipeline.
 
-**Request Body:**
+**Request:**
 ```json
 {
   "query": "How does authentication work in this codebase?",
   "max_tokens": 512,
   "top_k": 5,
   "task_scope": "explain",
-  "enable_web_search": true
+  "enable_web_search": true,
+  "project_rules": "Use TypeScript strict mode",
+  "privacy_mode": false
 }
 ```
 
-**Parameters:**
-- `query` (string, required): The question to answer (max length configurable via `MAX_QUERY_LENGTH`, default 100k chars)
-- `max_tokens` (integer, optional): Maximum tokens for LLM response (default: 512, max configurable via `MAX_OUTPUT_TOKENS`, default 128k)
-- `top_k` (integer, optional): Number of context chunks to retrieve (default: 10, max: 100)
-- `task_scope` (string, optional): Task scope for retrieval tuning — `find_bugs`, `explain`, `refactor`, `test`, or `general` (default: null/general)
-- `enable_web_search` (boolean, optional): Enable web search for additional context (default: true)
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | string | required | The question to answer |
+| `max_tokens` | int | 512 | Max LLM output tokens (up to `MAX_OUTPUT_TOKENS`) |
+| `top_k` | int | 10 | Number of context chunks to retrieve |
+| `task_scope` | string | null | `find_bugs`, `explain`, `refactor`, `test`, `general` |
+| `enable_web_search` | bool | true | Include web search results |
+| `project_rules` | string | null | Project-level instructions for the LLM |
+| `privacy_mode` | bool | false | When true, only local LLMs are used |
 
 **Response:**
 ```json
@@ -67,39 +52,68 @@ Main question answering endpoint using RAG pipeline.
       "score": 0.95,
       "meta": {
         "source": "auth.py",
-        "chunk_id": "auth_1",
+        "chunk_type": "function",
         "start_line": 10,
         "end_line": 25
-      },
-      "rank": 1
+      }
     }
   ],
-  "web_results": [
-    {
-      "title": "Authentication Best Practices",
-      "snippet": "Learn about secure authentication...",
-      "url": "https://example.com/auth",
-      "source": "serpapi",
-      "content": "Full page content...",
-      "fetched_at": "2024-01-01T00:00:00Z"
-    }
-  ],
+  "web_results": [],
   "meta": {
     "llm_backend": "ollama",
     "total_contexts": 5,
-    "total_web_results": 3,
-    "latency_ms": 1250,
-    "tokens_used": 487
+    "latency_ms": 1250
   }
 }
 ```
 
-### Repository Ingestion
+---
 
-#### POST /ingest
+### POST /chat
+
+Multi-turn AI chat with context, attachments, @ mentions, and project rules.
+
+**Request:**
+```json
+{
+  "messages": [
+    {"role": "user", "content": "How does the auth middleware work?"}
+  ],
+  "max_tokens": 1024,
+  "enable_web_search": false,
+  "enable_context": true,
+  "attachments": [
+    {
+      "name": "screenshot.png",
+      "type": "image/png",
+      "data": "base64-encoded-data",
+      "extracted_text": ""
+    }
+  ],
+  "resolved_mentions": "@file:src/auth.py content here...",
+  "project_rules": "Follow clean architecture patterns",
+  "privacy_mode": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `messages` | array | required | Conversation history `[{role, content}]` |
+| `max_tokens` | int | 1024 | Max response tokens |
+| `enable_web_search` | bool | false | Include web results |
+| `enable_context` | bool | true | Include RAG context |
+| `attachments` | array | null | File attachments (base64) |
+| `resolved_mentions` | string | null | Pre-resolved @ mention content |
+| `project_rules` | string | null | Project-level AI instructions |
+| `privacy_mode` | bool | false | Local LLMs only |
+
+---
+
+### POST /ingest
+
 Ingest a local repository into the vector index.
 
-**Request Body:**
+**Request:**
 ```json
 {
   "path": "/path/to/repository",
@@ -109,12 +123,6 @@ Ingest a local repository into the vector index.
 }
 ```
 
-**Parameters:**
-- `path` (string, required): Absolute path to repository
-- `recursive` (boolean, optional): Scan subdirectories (default: true)
-- `file_patterns` (array, optional): Include patterns (default: all supported)
-- `exclude_patterns` (array, optional): Exclude patterns (default: common excludes)
-
 **Response:**
 ```json
 {
@@ -122,26 +130,410 @@ Ingest a local repository into the vector index.
   "chunks_created": 234,
   "chunks_indexed": 234,
   "total_size": 1048576,
-  "processing_time_ms": 5432,
-  "files": [
+  "processing_time_ms": 5432
+}
+```
+
+---
+
+## Feature Endpoints
+
+### POST /completion
+
+Inline code completion. Returns a completion string given prefix/suffix context.
+
+**Request:**
+```json
+{
+  "prefix": "def calculate_total(items):\n    total = 0\n    for item in items:\n        ",
+  "suffix": "\n    return total",
+  "language": "python",
+  "file_path": "src/utils.py",
+  "max_tokens": 128,
+  "privacy_mode": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prefix` | string | required | Code before cursor (max 50k chars) |
+| `suffix` | string | `""` | Code after cursor (max 20k chars) |
+| `language` | string | `"plaintext"` | Programming language |
+| `file_path` | string | null | Current file path |
+| `max_tokens` | int | 128 | Max completion tokens (max 1024) |
+| `privacy_mode` | bool | false | Local LLMs only |
+
+**Response:**
+```json
+{
+  "completion": "total += item.price * item.quantity",
+  "model": "ollama",
+  "latency_ms": 85
+}
+```
+
+---
+
+### POST /inline-edit
+
+Edit a code selection based on a natural language instruction.
+
+**Request:**
+```json
+{
+  "code": "def add(a, b):\n    return a + b",
+  "instruction": "Add type hints and a docstring",
+  "language": "python",
+  "file_path": "src/math.py",
+  "context_before": "import math\n\n",
+  "context_after": "\ndef subtract(a, b):\n    return a - b",
+  "project_rules": "Use Google-style docstrings",
+  "privacy_mode": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `code` | string | required | Selected code to edit (max 100k) |
+| `instruction` | string | required | What to do (max 10k) |
+| `language` | string | `"plaintext"` | Programming language |
+| `context_before` | string | `""` | Code before selection (max 10k) |
+| `context_after` | string | `""` | Code after selection (max 10k) |
+| `project_rules` | string | null | Project rules |
+| `privacy_mode` | bool | false | Local LLMs only |
+
+**Response:**
+```json
+{
+  "edited_code": "def add(a: float, b: float) -> float:\n    \"\"\"Add two numbers.\n\n    Args:\n        a: First number.\n        b: Second number.\n\n    Returns:\n        Sum of a and b.\n    \"\"\"\n    return a + b",
+  "explanation": "",
+  "model": "ollama"
+}
+```
+
+---
+
+### POST /agent/execute
+
+Multi-file agent mode. Plans changes across multiple files and returns diffs.
+
+**Request:**
+```json
+{
+  "task": "Add input validation to all API endpoints",
+  "repo_path": "/path/to/project",
+  "mode": "auto",
+  "project_rules": "Use Pydantic for validation",
+  "privacy_mode": false,
+  "dry_run": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `task` | string | required | Task description (max 50k) |
+| `repo_path` | string | required | Repository root path |
+| `mode` | string | `"auto"` | Agent mode |
+| `project_rules` | string | null | Project rules |
+| `privacy_mode` | bool | false | Local LLMs only |
+| `dry_run` | bool | true | Preview changes without applying |
+
+**Response:**
+```json
+{
+  "changes": [
     {
-      "path": "src/auth.py",
-      "size": 2048,
-      "chunks": 5,
-      "language": "python"
+      "path": "src/api/routes.py",
+      "diff": "--- a/src/api/routes.py\n+++ b/src/api/routes.py\n...",
+      "newContent": "full file content...",
+      "action": "modify"
+    },
+    {
+      "path": "src/api/validators.py",
+      "diff": "",
+      "newContent": "new file content...",
+      "action": "create"
+    }
+  ],
+  "plan": "Add Pydantic models for request validation...",
+  "status": "completed"
+}
+```
+
+---
+
+### POST /smart-apply
+
+Determine where in a file to apply a code block and return the result.
+
+**Request:**
+```json
+{
+  "file_path": "src/utils.py",
+  "file_content": "existing file content...",
+  "code_block": "def new_helper():\n    return True",
+  "language": "python"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file_path` | string | required | Target file path |
+| `file_content` | string | required | Current file content (max 500k) |
+| `code_block` | string | required | Code to apply (max 100k) |
+| `language` | string | `"plaintext"` | Programming language |
+
+**Response:**
+```json
+{
+  "start_line": 15,
+  "end_line": 15,
+  "replacement": "def new_helper():\n    return True",
+  "new_content": "full file with code applied...",
+  "confidence": 0.85
+}
+```
+
+---
+
+### POST /symbols/lookup
+
+Look up symbol definitions or references using the code graph.
+
+**Request:**
+```json
+{
+  "symbol": "authenticate_user",
+  "file_path": "src/auth.py",
+  "line": 42,
+  "kind": "definition"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | string | required | Symbol name (max 500) |
+| `file_path` | string | null | File containing the symbol |
+| `line` | int | null | Line number |
+| `kind` | string | `"definition"` | `"definition"` or `"references"` |
+
+**Response (definition):**
+```json
+{
+  "location": {
+    "file_path": "src/auth.py",
+    "line": 10,
+    "column": 0,
+    "content": "def authenticate_user(username, password):..."
+  },
+  "references": [],
+  "content": "def authenticate_user(username, password):\n    ..."
+}
+```
+
+**Response (references):**
+```json
+{
+  "location": null,
+  "references": [
+    {"file_path": "src/routes.py", "line": 25, "column": 4, "content": "authenticate_user(req.user, req.pass)"},
+    {"file_path": "tests/test_auth.py", "line": 15, "column": 8, "content": "result = authenticate_user('admin', 'pass')"}
+  ],
+  "content": ""
+}
+```
+
+---
+
+### POST /multi-cursor-edit
+
+Generate multiple simultaneous edits across a file.
+
+**Request:**
+```json
+{
+  "file_content": "full file content...",
+  "instruction": "Rename all variables called 'tmp' to 'result'",
+  "language": "python",
+  "file_path": "src/processor.py"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file_content` | string | required | File content (max 500k) |
+| `instruction` | string | required | Edit instruction (max 10k) |
+| `language` | string | `"plaintext"` | Programming language |
+| `file_path` | string | null | File path |
+
+**Response:**
+```json
+{
+  "edits": [
+    {"start_line": 5, "start_col": 4, "end_line": 5, "end_col": 7, "new_text": "result"},
+    {"start_line": 8, "start_col": 12, "end_line": 8, "end_col": 15, "new_text": "result"},
+    {"start_line": 12, "start_col": 8, "end_line": 12, "end_col": 11, "new_text": "result"}
+  ]
+}
+```
+
+Edits are sorted bottom-to-top so applying them in order preserves line numbers.
+
+---
+
+### POST /docs/index
+
+Fetch and index external documentation from a URL.
+
+**Request:**
+```json
+{
+  "url": "https://docs.python.org/3/library/asyncio.html",
+  "label": "python-asyncio",
+  "recursive": true,
+  "max_pages": 50
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | required | Documentation URL |
+| `label` | string | URL | Label for later search filtering |
+| `recursive` | bool | true | Follow links (future) |
+| `max_pages` | int | 50 | Maximum pages to index (max 200) |
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "pages_indexed": 1,
+  "chunks": 12,
+  "label": "python-asyncio"
+}
+```
+
+---
+
+### POST /docs/search
+
+Search previously indexed documentation.
+
+**Request:**
+```json
+{
+  "query": "how to use asyncio gather",
+  "top_k": 5,
+  "label": "python-asyncio"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | string | required | Search query |
+| `top_k` | int | 5 | Max results (max 20) |
+| `label` | string | null | Filter by label |
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "text": "asyncio.gather(*aws, return_exceptions=False)...",
+      "score": 0.89,
+      "meta": {
+        "source": "docs",
+        "url": "https://docs.python.org/3/library/asyncio.html",
+        "label": "python-asyncio"
+      }
     }
   ]
 }
 ```
 
+---
+
+### POST /composer/start
+
+Start a long-running Composer agent session.
+
+**Request:**
+```json
+{
+  "task": "Refactor the auth module to use OAuth2",
+  "repo_path": "/path/to/project",
+  "project_rules": "Use httpx for HTTP calls",
+  "privacy_mode": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `task` | string | required | Task description (max 50k) |
+| `repo_path` | string | required | Repository root path |
+| `project_rules` | string | null | Project rules |
+| `privacy_mode` | bool | false | Local LLMs only |
+
+**Response:**
+```json
+{
+  "session_id": "a1b2c3d4",
+  "state": "starting"
+}
+```
+
+---
+
+### GET /composer/status/{session_id}
+
+Poll the status of a running Composer session.
+
+**Response (running):**
+```json
+{
+  "session_id": "a1b2c3d4",
+  "state": "running",
+  "progress": 0.45,
+  "current_step": "Editing src/auth/oauth.py",
+  "changes": [],
+  "error": null,
+  "log": [
+    "Starting composer for: Refactor the auth module...",
+    "Plan: Migrate from session-based auth to OAuth2...",
+    "Steps: 4",
+    "Step 1: Create OAuth2 client configuration"
+  ]
+}
+```
+
+**Response (completed):**
+```json
+{
+  "session_id": "a1b2c3d4",
+  "state": "completed",
+  "progress": 1.0,
+  "current_step": "Done",
+  "changes": [
+    {
+      "path": "src/auth/oauth.py",
+      "action": "create",
+      "newContent": "...",
+      "diff": ""
+    }
+  ],
+  "error": null,
+  "log": ["...", "Completed with 3 file change(s)"]
+}
+```
+
+---
+
 ## Search Endpoints
 
-### Vector Search
+### POST /search/vector
 
-#### POST /search/vector
-Direct vector similarity search with optional task-scoped retrieval and code graph expansion.
+Direct vector similarity search with code graph expansion.
 
-**Request Body:**
+**Request:**
 ```json
 {
   "query": "authentication function",
@@ -153,13 +545,14 @@ Direct vector similarity search with optional task-scoped retrieval and code gra
 }
 ```
 
-**Parameters:**
-- `query` (string, required): Search query
-- `top_k` (integer, optional): Number of results (default: 10)
-- `task_scope` (string, optional): Retrieval scope — `find_bugs`, `explain`, `refactor`, `test`, `general`
-- `expand_graph` (boolean, optional): Expand results with code graph neighbours (default: false)
-- `graph_depth` (integer, optional): Graph traversal depth (default: 1)
-- `graph_edge_types` (list[string], optional): Edge types to follow — `IMPORTS`, `CALLS`, `INHERITS`, `CONTAINS`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | string | required | Search query |
+| `top_k` | int | 10 | Number of results |
+| `task_scope` | string | null | `find_bugs`, `explain`, `refactor`, `test` |
+| `expand_graph` | bool | false | Include related code graph nodes |
+| `graph_depth` | int | 1 | Traversal depth |
+| `graph_edge_types` | list | `[]` | `IMPORTS`, `CALLS`, `INHERITS`, `CONTAINS` |
 
 **Response:**
 ```json
@@ -169,34 +562,32 @@ Direct vector similarity search with optional task-scoped retrieval and code gra
     {
       "text": "def authenticate_user(username, password):",
       "score": 0.95,
+      "dense_score": 0.92,
+      "lexical_score": 0.45,
       "chunk_id": "auth.py#3#a1b2c3d4",
       "meta": {
         "file_path": "auth.py",
         "chunk_type": "function",
         "symbol_name": "authenticate_user",
-        "start_line": 10,
         "relationships": [
-          {"type": "CALLS", "target": "hash_password"},
-          {"type": "IMPORTS", "target": "hashlib"}
+          {"type": "CALLS", "target": "hash_password"}
         ]
-      },
-      "content_type": "code",
-      "rank": 1
+      }
     }
   ],
   "search_type": "hybrid",
   "graph_expanded": true,
-  "task_scope": "find_bugs",
   "total_results": 10
 }
 ```
 
-### Web Search
+---
 
-#### POST /search/web
-Search the web for additional context.
+### POST /search/web
 
-**Request Body:**
+Web search for additional context.
+
+**Request:**
 ```json
 {
   "query": "Python authentication best practices",
@@ -204,26 +595,15 @@ Search the web for additional context.
 }
 ```
 
-**Response:**
-```json
-[
-  {
-    "title": "Python Authentication Guide",
-    "snippet": "Learn how to implement secure authentication...",
-    "url": "https://example.com/python-auth",
-    "source": "serpapi"
-  }
-]
-```
+---
 
 ## LLM Endpoints
 
-### Generate Response
+### POST /llm/generate
 
-#### POST /llm/generate
 Direct LLM text generation.
 
-**Request Body:**
+**Request:**
 ```json
 {
   "prompt": "Explain how JWT tokens work",
@@ -238,432 +618,198 @@ Direct LLM text generation.
   "text": "JWT (JSON Web Tokens) are a compact way to...",
   "meta": {
     "backend": "ollama",
-    "model": "llama2",
-    "latency_ms": 850,
-    "tokens": 245
+    "model": "mistral",
+    "latency_ms": 850
   }
 }
 ```
 
-### List Adapters
+### GET /llm/adapters
 
-#### GET /llm/adapters
-List available LLM adapters and their priority.
+List available LLM backends and their priority.
 
-**Response:**
-```json
-{
-  "available": ["ollama", "openai", "mock"],
-  "priority": ["ollama", "openai", "mock"],
-  "active": "ollama"
-}
-```
+---
 
 ## Index Management
 
-### Index Statistics
+### GET /index/stats
 
-#### GET /index/stats
-Get vector index statistics.
+Vector index statistics (total vectors, dimension, memory usage).
 
-**Response:**
-```json
-{
-  "total_vectors": 1234,
-  "dimension": 384,
-  "backend": "faiss",
-  "memory_usage_mb": 45.6,
-  "last_updated": "2024-01-01T00:00:00Z"
-}
-```
+### DELETE /index/clear
 
-### Clear Index
+Clear all vectors from the index. Requires re-ingestion.
 
-#### DELETE /index/clear
-Clear all vectors from the index.
-
-**Response:**
-```json
-{
-  "status": "cleared",
-  "vectors_removed": 1234,
-  "timestamp": "2024-01-01T00:00:00Z"
-}
-```
-
-## Code Index Endpoints
-
-The code index provides symbol-based search functionality for source code.
-
-### Code Index Statistics
-
-#### GET /code-index/stats
-Get code index statistics (symbol-based indexing).
-
-**Response:**
-```json
-{
-  "total_files": 150,
-  "total_symbols": 1200,
-  "languages": {"python": 100, "javascript": 50},
-  "index_time_ms": 523,
-  "last_indexed": "2024-01-01T00:00:00Z",
-  "is_incremental": true,
-  "files_changed": 5,
-  "files_unchanged": 145
-}
-```
-
-### Code Index Search
-
-#### POST /code-index/search
-Search the code index for symbols and code fragments.
-
-**Query Parameters:**
-- `query` (string, required): Search query (symbol name, partial match)
-- `top_k` (integer, optional): Maximum results to return (default: 10)
-
-**Response:**
-```json
-{
-  "query": "UserService",
-  "results": [
-    {
-      "symbol": "UserService",
-      "type": "class",
-      "path": "src/services/user.py",
-      "line_start": 15,
-      "line_end": 45,
-      "docstring": "Service for user management."
-    }
-  ],
-  "count": 1
-}
-```
+---
 
 ## System Endpoints
 
-### Health Check
+### GET /health
 
-#### GET /health
-System health and status information.
+Health check for all services.
 
 **Response:**
 ```json
 {
   "status": "healthy",
-  "timestamp": "2024-01-01T00:00:00Z",
-  "version": "1.0.0",
   "services": {
     "vector_index": "healthy",
     "preprocessor": "healthy",
-    "connector": "healthy",
-    "web_fetcher": "healthy",
-    "llm_client": "healthy"
-  },
-  "uptime_seconds": 3600
-}
-```
-
-### Configuration
-
-#### GET /config
-Get current system configuration.
-
-**Response:**
-```json
-{
-  "privacy_mode": "local",
-  "enable_web_search": true,
-  "llm_priority": ["ollama", "mock"],
-  "max_file_size_mb": 10,
-  "supported_languages": ["python", "javascript", "typescript", "markdown"]
-}
-```
-
-## Error Codes
-
-### Client Errors (4xx)
-
-- **400 Bad Request**: Invalid request parameters
-- **401 Unauthorized**: Authentication required
-- **403 Forbidden**: Insufficient permissions
-- **404 Not Found**: Resource not found
-- **422 Unprocessable Entity**: Validation error
-- **429 Too Many Requests**: Rate limit exceeded
-
-### Server Errors (5xx)
-
-- **500 Internal Server Error**: General server error
-- **502 Bad Gateway**: Upstream service error
-- **503 Service Unavailable**: Service temporarily unavailable
-- **504 Gateway Timeout**: Upstream service timeout
-
-## Rate Limits
-
-- **Query Endpoint**: 60 requests per minute
-- **Ingestion Endpoint**: 10 requests per minute
-- **Search Endpoints**: 100 requests per minute
-- **System Endpoints**: 200 requests per minute
-
-## Usage Examples
-
-### Basic Query
-```bash
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "How is user authentication implemented?",
-    "max_tokens": 512
-  }'
-```
-
-### Repository Ingestion
-```bash
-curl -X POST "http://localhost:8080/ingest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "path": "/home/user/my-project",
-    "recursive": true,
-    "file_patterns": ["*.py", "*.js"]
-  }'
-```
-
-### Vector Search
-```bash
-curl -X POST "http://localhost:8080/search/vector" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "database connection",
-    "top_k": 5
-  }'
-```
-
-### Task-Scoped Bug Detection Query
-```bash
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "potential SQL injection vulnerabilities",
-    "task_scope": "find_bugs"
-  }'
-```
-
-### Graph-Expanded Search
-```bash
-curl -X POST "http://localhost:8080/search/vector" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "UserService",
-    "top_k": 5,
-    "expand_graph": true,
-    "graph_depth": 2,
-    "graph_edge_types": ["CALLS", "INHERITS", "CONTAINS"]
-  }'
-```
-
-### Health Check
-```bash
-curl "http://localhost:8080/health"
-```
-
-## SDK Examples
-
-### Python
-```python
-import requests
-
-# Query the system with task-scoped retrieval
-response = requests.post(
-    "http://localhost:8080/query",
-    json={
-        "query": "How does authentication work?",
-        "max_tokens": 512,
-        "task_scope": "explain"
-    }
-)
-result = response.json()
-print(result["answer"])
-```
-
-### JavaScript
-```javascript
-// Query the system
-const response = await fetch('http://localhost:8080/query', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    query: 'How does authentication work?',
-    max_tokens: 512
-  })
-});
-const result = await response.json();
-console.log(result.answer);
-```
-
-### cURL Scripts
-```bash
-#!/bin/bash
-# ingest.sh - Ingest a repository
-curl -X POST "http://localhost:8080/ingest" \
-  -H "Content-Type: application/json" \
-  -d "{\"path\": \"$1\", \"recursive\": true}"
-
-# query.sh - Ask a question
-curl -X POST "http://localhost:8080/query" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"$1\", \"max_tokens\": 512}"
-```
-
-## WebSocket Support (Future)
-
-ContextForge will support WebSocket connections for real-time updates:
-
-```javascript
-const ws = new WebSocket('ws://localhost:8080/ws');
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('Real-time update:', data);
-};
-```
-
-## Pagination
-
-For endpoints returning large datasets, use pagination:
-
-```json
-{
-  "query": "search term",
-  "page": 1,
-  "page_size": 20
-}
-```
-
-Response includes pagination metadata:
-```json
-{
-  "data": [...],
-  "pagination": {
-    "page": 1,
-    "page_size": 20,
-    "total_pages": 5,
-    "total_items": 100
+    "connector": "healthy"
   }
+}
+```
+
+### GET /config
+
+Current system configuration.
+
+---
+
+## Terminal Endpoints
+
+### POST /terminal/execute
+
+Execute a terminal command.
+
+```json
+{
+  "command": "npm install",
+  "working_directory": "/path/to/project",
+  "timeout": 60
+}
+```
+
+### POST /terminal/suggest
+
+Get AI-suggested commands for a task.
+
+```json
+{
+  "task_description": "install project dependencies",
+  "working_directory": "/path/to/project"
 }
 ```
 
 ---
 
-## Code Index Module
+## Git Endpoints
 
-The `services.index` module provides incremental, metadata-first code indexing.
+### POST /git/commit-message
 
-### Classes
+Generate an AI-powered commit message from a diff.
 
-#### CodeFragment
-Represents a single indexed code unit (function, class, module).
-
-```python
-from services.index import CodeFragment
-
-fragment = CodeFragment(
-    type="function",           # function, class, module
-    path="src/utils.py",       # File path relative to repo
-    symbol="calculate_sum",    # Symbol name
-    language="python",         # Programming language
-    hash="abc123",             # Content hash for change detection
-    start_line=10,             # Starting line number
-    end_line=25,               # Ending line number
-    docstring="Add two nums.", # Extracted docstring
-    dependencies=["math"],     # Imported modules
-    provenance="ast"           # How it was extracted
-)
-
-# Serialize to dict
-data = fragment.to_dict()
+```json
+{
+  "diff": "diff --git a/src/feature.py ...",
+  "staged_files": ["src/feature.py"],
+  "branch": "feature/auth",
+  "recent_commits": ["feat: add input validation"]
+}
 ```
 
-#### IndexStats
-Statistics about an indexing operation.
+---
 
-```python
-from services.index import IndexStats
+## File Upload
 
-stats = IndexStats(
-    total_files=50,
-    total_symbols=200,
-    languages={"python": 40, "javascript": 10},
-    index_time_ms=1500,
-    last_indexed="2026-01-11T12:00:00Z",
-    is_incremental=True,
-    files_changed=5,
-    files_unchanged=45
-)
+### POST /files/upload
+
+Upload a file for AI analysis (images, PDFs, documents).
+
+```bash
+curl -X POST http://localhost:8080/files/upload \
+  -F "file=@/path/to/screenshot.png"
 ```
 
-#### CodeIndex
-Main indexing class with search capabilities.
+---
+
+## Error Codes
+
+| Code | Meaning |
+|------|---------|
+| 400 | Invalid request parameters |
+| 404 | Resource not found |
+| 422 | Validation error (e.g., LLM could not parse response) |
+| 429 | Rate limit exceeded |
+| 500 | Internal server error |
+| 502 | Upstream service unreachable |
+| 504 | Upstream service timeout |
+
+---
+
+## Rate Limits
+
+| Endpoint Group | Limit |
+|---------------|-------|
+| `/query`, `/chat` | 60 req/min |
+| `/completion`, `/inline-edit` | 120 req/min |
+| `/ingest` | 10 req/min |
+| `/search/*` | 100 req/min |
+| `/agent/*`, `/composer/*` | 20 req/min |
+| System endpoints | 200 req/min |
+
+---
+
+## SDK Examples
+
+### Python
 
 ```python
-from services.index import CodeIndex
+import requests
 
-# Create index (optionally with persistence)
-index = CodeIndex(storage_path="/path/to/storage")
+# Inline completion
+resp = requests.post("http://localhost:8080/completion", json={
+    "prefix": "def hello():\n    ",
+    "language": "python",
+    "max_tokens": 64
+})
+print(resp.json()["completion"])
 
-# Index a repository
-stats = index.index_repository(
-    repo_path="/path/to/repo",
-    extensions=['.py', '.js', '.ts'],  # File types to index
-    incremental=True,                   # Only re-index changes
-    annotate=False                      # Enable LLM annotation
-)
-
-# Search for symbols
-results = index.search("UserService", top_k=10)
-
-# Get file dependencies
-deps = index.get_dependencies("src/api.py")
-
-# Get dependents of a module
-dependents = index.get_dependents("utils")
-
-# Get statistics
-stats = index.get_stats()
+# Multi-file agent
+resp = requests.post("http://localhost:8080/agent/execute", json={
+    "task": "Add error handling to all database calls",
+    "repo_path": "/path/to/project",
+    "dry_run": True
+})
+for change in resp.json()["changes"]:
+    print(f"{change['action']} {change['path']}")
 ```
 
-### Global Singleton
+### JavaScript / TypeScript
 
-```python
-from services.index import get_code_index
-
-# Get or create global index instance
-index = get_code_index(storage_path="/path/to/storage")
+```typescript
+const response = await fetch('http://localhost:8080/completion', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    prefix: 'function hello() {\n  ',
+    language: 'javascript',
+    max_tokens: 64
+  })
+});
+const { completion } = await response.json();
 ```
 
-### Supported Languages
+### cURL
 
-| Extension | Language | Extraction Method |
-|-----------|----------|-------------------|
-| `.py` | Python | AST parsing |
-| `.js` | JavaScript | Regex patterns |
-| `.ts` | TypeScript | Regex patterns |
-| `.java` | Java | Fallback (module) |
-| `.go` | Go | Fallback (module) |
-| `.rs` | Rust | Fallback (module) |
-| `.cpp`, `.c`, `.h` | C/C++ | Fallback (module) |
-| `.rb` | Ruby | Fallback (module) |
-| `.php` | PHP | Fallback (module) |
-| `.swift` | Swift | Fallback (module) |
-| `.kt` | Kotlin | Fallback (module) |
+```bash
+# Inline edit
+curl -X POST http://localhost:8080/inline-edit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "code": "x = a + b",
+    "instruction": "Add type hints",
+    "language": "python"
+  }'
 
-### Backwards Compatibility
+# Start composer
+curl -X POST http://localhost:8080/composer/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task": "Refactor auth to use OAuth2",
+    "repo_path": "/my/project"
+  }'
 
-For backwards compatibility, all classes are also exported from `services.core`:
-
-```python
-# These imports are equivalent
-from services.index import CodeIndex, CodeFragment, IndexStats
-from services.core import CodeIndex, CodeFragment, IndexStats
+# Poll composer status
+curl http://localhost:8080/composer/status/a1b2c3d4
 ```
-
-New code should use `services.index` directly.

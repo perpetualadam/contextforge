@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import axios from 'axios';
 import * as path from 'path';
+import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { ContextForgeChatProvider } from './chatPanel';
 import { ContextForgePromptProvider } from './promptPanel';
 import { GitIntegration } from './gitIntegration';
 import { AgentStatusProvider } from './agentPanel';
 import { TaskPanelProvider } from './tools/taskPanel';
+import { DiagnosticsProvider } from './tools/diagnostics';
 
 interface ContextForgeConfig {
     apiUrl: string;
@@ -25,6 +28,20 @@ interface ContextForgeConfig {
     githubToken: string;
     autoCommitMessages: boolean;
     defaultBranch: string;
+    incrementalIndexing: boolean;
+    privacyMode: boolean;
+    enableInlineCompletion: boolean;
+    enableAutoLint: boolean;
+    [key: string]: any;
+}
+
+interface EditorContextPayload {
+    current_file: string | undefined;
+    current_selection: string | undefined;
+    cursor_line: number | undefined;
+    open_files: string[];
+    git_diff: string | undefined;
+    recent_files: string[];
 }
 
 interface AutoTerminalResult {
@@ -545,7 +562,11 @@ export function activate(context: vscode.ExtensionContext) {
             bitbucketToken: config.get('bitbucketToken', ''),
             bitbucketUsername: config.get('bitbucketUsername', ''),
             autoCommitMessages: config.get('autoCommitMessages', true),
-            defaultBranch: config.get('defaultBranch', 'main')
+            defaultBranch: config.get('defaultBranch', 'main'),
+            incrementalIndexing: config.get('incrementalIndexing', true),
+            privacyMode: config.get('privacyMode', false),
+            enableInlineCompletion: config.get('enableInlineCompletion', true),
+            enableAutoLint: config.get('enableAutoLint', true),
         };
     };
 
@@ -1056,6 +1077,517 @@ export function activate(context: vscode.ExtensionContext) {
         await checkLLMStatus(config);
     });
 
+    // ── Feature #19: Privacy mode toggle ──
+    const privacyStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    privacyStatusBar.command = 'contextforge.togglePrivacy';
+    const updatePrivacyBar = () => {
+        const c = getConfig();
+        privacyStatusBar.text = c.privacyMode ? '$(shield) Private' : '$(globe) Cloud';
+        privacyStatusBar.tooltip = c.privacyMode
+            ? 'Privacy Mode ON: code stays local'
+            : 'Privacy Mode OFF: code may be sent to cloud LLMs';
+        privacyStatusBar.show();
+    };
+    updatePrivacyBar();
+    context.subscriptions.push(privacyStatusBar);
+
+    const togglePrivacyCommand = vscode.commands.registerCommand('contextforge.togglePrivacy', async () => {
+        const current = getConfig().privacyMode;
+        await vscode.workspace.getConfiguration('contextforge').update('privacyMode', !current, vscode.ConfigurationTarget.Global);
+        updatePrivacyBar();
+        vscode.window.showInformationMessage(`Privacy mode ${!current ? 'ENABLED' : 'DISABLED'}`);
+    });
+
+    // ── Feature #7: Project rules (.contextforge-rules) ──
+    let projectRules: string | undefined;
+    const loadProjectRules = () => {
+        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!ws) { return; }
+        const candidates = ['.contextforge-rules', '.contextforge/rules.md', '.contextforge/rules.txt'];
+        for (const c of candidates) {
+            const p = path.join(ws, c);
+            try {
+                if (fs.existsSync(p)) {
+                    projectRules = fs.readFileSync(p, 'utf-8');
+                    return;
+                }
+            } catch {}
+        }
+        projectRules = undefined;
+    };
+    loadProjectRules();
+    const rulesWatcher = vscode.workspace.createFileSystemWatcher('**/.contextforge*');
+    rulesWatcher.onDidChange(loadProjectRules);
+    rulesWatcher.onDidCreate(loadProjectRules);
+    rulesWatcher.onDidDelete(() => { projectRules = undefined; });
+    context.subscriptions.push(rulesWatcher);
+
+    // ── Feature #12: Undo/redo of AI changes ──
+    interface AICheckpoint {
+        uri: string;
+        content: string;
+        timestamp: number;
+        label: string;
+    }
+    const aiCheckpoints: AICheckpoint[] = [];
+    const MAX_CHECKPOINTS = 50;
+
+    const saveCheckpoint = (uri: vscode.Uri, label: string) => {
+        try {
+            const content = fs.readFileSync(uri.fsPath, 'utf-8');
+            aiCheckpoints.push({ uri: uri.fsPath, content, timestamp: Date.now(), label });
+            if (aiCheckpoints.length > MAX_CHECKPOINTS) { aiCheckpoints.shift(); }
+        } catch {}
+    };
+
+    const undoAICommand = vscode.commands.registerCommand('contextforge.undoAIChange', async () => {
+        if (aiCheckpoints.length === 0) {
+            vscode.window.showInformationMessage('No AI checkpoints to undo');
+            return;
+        }
+        const items = aiCheckpoints.map((cp, i) => ({
+            label: cp.label,
+            description: path.basename(cp.uri) + ' - ' + new Date(cp.timestamp).toLocaleTimeString(),
+            index: i
+        })).reverse();
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Select checkpoint to restore' });
+        if (pick) {
+            const cp = aiCheckpoints[pick.index];
+            fs.writeFileSync(cp.uri, cp.content, 'utf-8');
+            const doc = await vscode.workspace.openTextDocument(cp.uri);
+            await vscode.window.showTextDocument(doc);
+            aiCheckpoints.splice(pick.index);
+            vscode.window.showInformationMessage(`Restored: ${cp.label}`);
+        }
+    });
+
+    // ── Feature #11: Auto linting after AI edits ──
+    const diagnosticsProvider = new DiagnosticsProvider();
+    context.subscriptions.push({ dispose: () => diagnosticsProvider.dispose() });
+
+    const autoLintAfterEdit = async (filePath: string) => {
+        if (!getConfig().enableAutoLint) { return; }
+        await new Promise(r => setTimeout(r, 1500));
+        const errors = diagnosticsProvider.getErrors([filePath]);
+        if (errors.length > 0) {
+            const fix = await vscode.window.showWarningMessage(
+                `${errors.length} error(s) detected after AI edit. Ask AI to fix?`,
+                'Auto-fix', 'Ignore'
+            );
+            if (fix === 'Auto-fix') {
+                const errorText = diagnosticsProvider.formatDiagnostics(errors);
+                chatProvider.sendMessage(`Fix the following lint errors in ${path.basename(filePath)}:\n${errorText}`);
+            }
+        }
+    };
+
+    // ── Feature #4: Diff preview before applying ──
+    const showDiffPreview = async (originalUri: vscode.Uri, newContent: string, title: string): Promise<boolean> => {
+        const scheme = 'contextforge-preview';
+        const provider = new (class implements vscode.TextDocumentContentProvider {
+            private _content = newContent;
+            provideTextDocumentContent(): string { return this._content; }
+        })();
+        const reg = vscode.workspace.registerTextDocumentContentProvider(scheme, provider);
+        const previewUri = vscode.Uri.parse(`${scheme}:${originalUri.path}?preview`);
+        await vscode.commands.executeCommand('vscode.diff', originalUri, previewUri, title);
+        const choice = await vscode.window.showInformationMessage('Apply this change?', 'Apply', 'Reject');
+        reg.dispose();
+        return choice === 'Apply';
+    };
+
+    // ── Feature #10: Smart apply ──
+    const smartApplyCommand = vscode.commands.registerCommand('contextforge.smartApply', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) { vscode.window.showWarningMessage('No active editor'); return; }
+
+        const code = await vscode.env.clipboard.readText();
+        if (!code.trim()) { vscode.window.showWarningMessage('Clipboard is empty'); return; }
+
+        try {
+            const resp = await axios.post(`${getConfig().apiUrl}/smart-apply`, {
+                file_path: editor.document.uri.fsPath,
+                file_content: editor.document.getText(),
+                code_block: code,
+                language: editor.document.languageId,
+            });
+            const result = resp.data;
+            if (result.start_line !== undefined) {
+                saveCheckpoint(editor.document.uri, 'Before smart apply');
+                const startLine = Math.max(0, result.start_line - 1);
+                const endLine = result.end_line ? result.end_line : startLine;
+                const range = new vscode.Range(startLine, 0, endLine, editor.document.lineAt(Math.min(endLine, editor.document.lineCount - 1)).text.length);
+                const applied = await showDiffPreview(editor.document.uri, result.new_content, 'Smart Apply Preview');
+                if (applied) {
+                    await editor.edit(eb => { eb.replace(range, result.replacement); });
+                    autoLintAfterEdit(editor.document.uri.fsPath);
+                }
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Smart apply failed: ${e.message}`);
+        }
+    });
+
+    // ── Feature #1: Inline code completion (Tab) ──
+    const completionProvider = vscode.languages.registerInlineCompletionItemProvider(
+        { pattern: '**' },
+        {
+            async provideInlineCompletionItems(document, position, context, token) {
+                if (!getConfig().enableInlineCompletion) { return []; }
+                if (getConfig().privacyMode) {
+                    // In privacy mode, only use local model
+                }
+
+                const prefix = document.getText(new vscode.Range(
+                    Math.max(0, position.line - 50), 0, position.line, position.character
+                ));
+                const suffix = document.getText(new vscode.Range(
+                    position.line, position.character,
+                    Math.min(document.lineCount - 1, position.line + 20),
+                    document.lineAt(Math.min(document.lineCount - 1, position.line + 20)).text.length
+                ));
+
+                try {
+                    const resp = await axios.post(`${getConfig().apiUrl}/completion`, {
+                        prefix,
+                        suffix,
+                        language: document.languageId,
+                        file_path: document.uri.fsPath,
+                        max_tokens: 128,
+                        privacy_mode: getConfig().privacyMode,
+                    }, { timeout: 5000 });
+
+                    if (token.isCancellationRequested) { return []; }
+                    const text = resp.data?.completion;
+                    if (!text) { return []; }
+
+                    return [new vscode.InlineCompletionItem(
+                        text,
+                        new vscode.Range(position, position)
+                    )];
+                } catch {
+                    return [];
+                }
+            }
+        }
+    );
+
+    // ── Feature #2: Inline editing (Ctrl+K) ──
+    const inlineEditCommand = vscode.commands.registerCommand('contextforge.inlineEdit', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) { return; }
+
+        const selection = editor.selection;
+        const selectedText = editor.document.getText(selection);
+        if (!selectedText.trim()) {
+            vscode.window.showWarningMessage('Select code first, then use Ctrl+K');
+            return;
+        }
+
+        const instruction = await vscode.window.showInputBox({
+            prompt: 'What should ContextForge do with this code?',
+            placeHolder: 'e.g., add error handling, optimize, convert to async',
+        });
+        if (!instruction) { return; }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'ContextForge: Editing inline...',
+        }, async () => {
+            try {
+                const resp = await axios.post(`${getConfig().apiUrl}/inline-edit`, {
+                    code: selectedText,
+                    instruction,
+                    language: editor.document.languageId,
+                    file_path: editor.document.uri.fsPath,
+                    context_before: editor.document.getText(new vscode.Range(
+                        Math.max(0, selection.start.line - 10), 0, selection.start.line, 0
+                    )),
+                    context_after: editor.document.getText(new vscode.Range(
+                        selection.end.line, selection.end.character,
+                        Math.min(editor.document.lineCount - 1, selection.end.line + 10),
+                        editor.document.lineAt(Math.min(editor.document.lineCount - 1, selection.end.line + 10)).text.length
+                    )),
+                    project_rules: projectRules,
+                    privacy_mode: getConfig().privacyMode,
+                });
+                const newCode = resp.data?.edited_code;
+                if (!newCode) { return; }
+
+                saveCheckpoint(editor.document.uri, 'Before inline edit');
+                const applied = await showDiffPreview(editor.document.uri,
+                    editor.document.getText().substring(0, editor.document.offsetAt(selection.start)) +
+                    newCode +
+                    editor.document.getText().substring(editor.document.offsetAt(selection.end)),
+                    `Inline Edit: ${instruction}`
+                );
+                if (applied) {
+                    await editor.edit(eb => { eb.replace(selection, newCode); });
+                    autoLintAfterEdit(editor.document.uri.fsPath);
+                }
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Inline edit failed: ${e.message}`);
+            }
+        });
+    });
+
+    // ── Feature #3: Multi-file agent mode ──
+    const agentModeCommand = vscode.commands.registerCommand('contextforge.agentMode', async () => {
+        const task = await vscode.window.showInputBox({
+            prompt: 'Describe the task for the AI agent',
+            placeHolder: 'e.g., refactor the auth module to use JWT, add tests',
+        });
+        if (!task) { return; }
+
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) { vscode.window.showErrorMessage('No workspace open'); return; }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'ContextForge Agent: Working...',
+            cancellable: true,
+        }, async (progress, token) => {
+            try {
+                progress.report({ message: 'Planning changes...' });
+                const resp = await axios.post(`${getConfig().apiUrl}/agent/execute`, {
+                    task,
+                    repo_path: workspaceRoot,
+                    mode: 'auto',
+                    project_rules: projectRules,
+                    privacy_mode: getConfig().privacyMode,
+                    dry_run: true,
+                }, { timeout: 120000 });
+
+                if (token.isCancellationRequested) { return; }
+
+                const result = resp.data;
+                const fileChanges: Array<{ path: string; diff: string; newContent: string }> = result.changes || [];
+
+                if (fileChanges.length === 0) {
+                    vscode.window.showInformationMessage('Agent found no changes needed');
+                    return;
+                }
+
+                progress.report({ message: `Reviewing ${fileChanges.length} file(s)...` });
+
+                const accept = await vscode.window.showInformationMessage(
+                    `Agent wants to modify ${fileChanges.length} file(s). Review changes?`,
+                    'Review & Apply', 'Cancel'
+                );
+                if (accept !== 'Review & Apply') { return; }
+
+                for (const change of fileChanges) {
+                    if (token.isCancellationRequested) { break; }
+                    const fullPath = path.isAbsolute(change.path) ? change.path : path.join(workspaceRoot, change.path);
+                    const uri = vscode.Uri.file(fullPath);
+                    try {
+                        saveCheckpoint(uri, `Before agent: ${task.substring(0, 30)}`);
+                    } catch {}
+
+                    const applied = await showDiffPreview(uri, change.newContent, `Agent: ${path.basename(change.path)}`);
+                    if (applied) {
+                        fs.writeFileSync(fullPath, change.newContent, 'utf-8');
+                        autoLintAfterEdit(fullPath);
+                    }
+                }
+
+                vscode.window.showInformationMessage(`Agent completed: ${task.substring(0, 50)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Agent mode failed: ${e.message}`);
+            }
+        });
+    });
+
+    // ── Feature #14: Symbol-level navigation ──
+    const symbolDefinitionProvider = vscode.languages.registerDefinitionProvider(
+        { pattern: '**' },
+        {
+            async provideDefinition(document, position, token) {
+                const wordRange = document.getWordRangeAtPosition(position);
+                if (!wordRange) { return null; }
+                const symbol = document.getText(wordRange);
+
+                try {
+                    const resp = await axios.post(`${getConfig().apiUrl}/symbols/lookup`, {
+                        symbol,
+                        file_path: document.uri.fsPath,
+                        line: position.line + 1,
+                        kind: 'definition',
+                    }, { timeout: 5000 });
+                    const loc = resp.data?.location;
+                    if (loc?.file_path) {
+                        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+                        const fullPath = path.isAbsolute(loc.file_path) ? loc.file_path : path.join(ws, loc.file_path);
+                        return new vscode.Location(
+                            vscode.Uri.file(fullPath),
+                            new vscode.Position(Math.max(0, (loc.line || 1) - 1), 0)
+                        );
+                    }
+                } catch {}
+                return null;
+            }
+        }
+    );
+
+    const symbolReferenceProvider = vscode.languages.registerReferenceProvider(
+        { pattern: '**' },
+        {
+            async provideReferences(document, position, _refContext, token) {
+                const wordRange = document.getWordRangeAtPosition(position);
+                if (!wordRange) { return []; }
+                const symbol = document.getText(wordRange);
+
+                try {
+                    const resp = await axios.post(`${getConfig().apiUrl}/symbols/lookup`, {
+                        symbol,
+                        file_path: document.uri.fsPath,
+                        line: position.line + 1,
+                        kind: 'references',
+                    }, { timeout: 5000 });
+                    const refs = resp.data?.references || [];
+                    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+                    return refs.map((ref: any) => {
+                        const fullPath = path.isAbsolute(ref.file_path) ? ref.file_path : path.join(ws, ref.file_path);
+                        return new vscode.Location(
+                            vscode.Uri.file(fullPath),
+                            new vscode.Position(Math.max(0, (ref.line || 1) - 1), 0)
+                        );
+                    });
+                } catch {}
+                return [];
+            }
+        }
+    );
+
+    // ── Feature #15: Multi-cursor editing from AI ──
+    const multiCursorEditCommand = vscode.commands.registerCommand('contextforge.multiCursorEdit', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) { return; }
+
+        const instruction = await vscode.window.showInputBox({
+            prompt: 'Describe multi-cursor edit',
+            placeHolder: 'e.g., rename all occurrences of "foo" to "bar", add logging to all functions',
+        });
+        if (!instruction) { return; }
+
+        try {
+            const resp = await axios.post(`${getConfig().apiUrl}/multi-cursor-edit`, {
+                file_content: editor.document.getText(),
+                instruction,
+                language: editor.document.languageId,
+                file_path: editor.document.uri.fsPath,
+            });
+            const edits: Array<{ start_line: number; start_col: number; end_line: number; end_col: number; new_text: string }> = resp.data?.edits || [];
+            if (edits.length === 0) { vscode.window.showInformationMessage('No edits suggested'); return; }
+
+            saveCheckpoint(editor.document.uri, `Before multi-cursor: ${instruction.substring(0, 30)}`);
+            await editor.edit(eb => {
+                for (const edit of edits) {
+                    const range = new vscode.Range(
+                        Math.max(0, edit.start_line - 1), edit.start_col,
+                        Math.max(0, edit.end_line - 1), edit.end_col
+                    );
+                    eb.replace(range, edit.new_text);
+                }
+            });
+            vscode.window.showInformationMessage(`Applied ${edits.length} edit(s)`);
+            autoLintAfterEdit(editor.document.uri.fsPath);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Multi-cursor edit failed: ${e.message}`);
+        }
+    });
+
+    // ── Feature #8: Documentation indexing ──
+    const indexDocsCommand = vscode.commands.registerCommand('contextforge.indexDocs', async () => {
+        const url = await vscode.window.showInputBox({
+            prompt: 'Enter documentation URL to index',
+            placeHolder: 'https://docs.example.com/api-reference',
+        });
+        if (!url) { return; }
+
+        const label = await vscode.window.showInputBox({
+            prompt: 'Label for this documentation (used with @docs)',
+            placeHolder: 'e.g., react-docs, fastapi',
+        });
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Indexing documentation...',
+        }, async () => {
+            try {
+                const resp = await axios.post(`${getConfig().apiUrl}/docs/index`, {
+                    url, label: label || url, recursive: true,
+                });
+                vscode.window.showInformationMessage(`Indexed ${resp.data.pages_indexed || 0} pages from ${url}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Doc indexing failed: ${e.message}`);
+            }
+        });
+    });
+
+    // ── Feature #20: Composer (long-running agent) ──
+    const composerCommand = vscode.commands.registerCommand('contextforge.composer', async () => {
+        const task = await vscode.window.showInputBox({
+            prompt: 'Describe a complex, multi-step task for the Composer agent',
+            placeHolder: 'e.g., Add user authentication with JWT, create login/register endpoints, add middleware',
+        });
+        if (!task) { return; }
+
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) { vscode.window.showErrorMessage('No workspace open'); return; }
+
+        try {
+            const resp = await axios.post(`${getConfig().apiUrl}/composer/start`, {
+                task,
+                repo_path: workspaceRoot,
+                project_rules: projectRules,
+                privacy_mode: getConfig().privacyMode,
+            });
+            const sessionId = resp.data?.session_id;
+            if (!sessionId) { return; }
+
+            vscode.window.showInformationMessage(`Composer started (session: ${sessionId}). Check Agent Status panel for progress.`);
+
+            // Poll for status updates
+            const pollInterval = setInterval(async () => {
+                try {
+                    const status = await axios.get(`${getConfig().apiUrl}/composer/status/${sessionId}`);
+                    if (status.data.state === 'completed' || status.data.state === 'failed') {
+                        clearInterval(pollInterval);
+                        if (status.data.state === 'completed') {
+                            const changes = status.data.changes || [];
+                            if (changes.length > 0) {
+                                const apply = await vscode.window.showInformationMessage(
+                                    `Composer completed! ${changes.length} file(s) modified.`,
+                                    'Review Changes', 'Dismiss'
+                                );
+                                if (apply === 'Review Changes') {
+                                    for (const change of changes) {
+                                        const fullPath = path.isAbsolute(change.path) ? change.path : path.join(workspaceRoot, change.path);
+                                        const uri = vscode.Uri.file(fullPath);
+                                        saveCheckpoint(uri, `Before composer: ${task.substring(0, 30)}`);
+                                        const accepted = await showDiffPreview(uri, change.newContent, `Composer: ${path.basename(change.path)}`);
+                                        if (accepted) {
+                                            fs.writeFileSync(fullPath, change.newContent, 'utf-8');
+                                        }
+                                    }
+                                }
+                            } else {
+                                vscode.window.showInformationMessage('Composer completed with no file changes.');
+                            }
+                        } else {
+                            vscode.window.showErrorMessage(`Composer failed: ${status.data.error || 'Unknown error'}`);
+                        }
+                    }
+                } catch {}
+            }, 3000);
+
+            setTimeout(() => clearInterval(pollInterval), 600000);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Composer failed: ${e.message}`);
+        }
+    });
+
     context.subscriptions.push(
         askCommand,
         ingestCommand,
@@ -1077,8 +1609,45 @@ export function activate(context: vscode.ExtensionContext) {
         githubPRCommand,
         githubIssuesCommand,
         runOrchestrationCommand,
-        checkLLMStatusCommand
+        checkLLMStatusCommand,
+        togglePrivacyCommand,
+        undoAICommand,
+        smartApplyCommand,
+        completionProvider,
+        inlineEditCommand,
+        agentModeCommand,
+        symbolDefinitionProvider,
+        symbolReferenceProvider,
+        multiCursorEditCommand,
+        indexDocsCommand,
+        composerCommand,
     );
+
+    // File-save incremental re-indexing
+    let reindexTimers: Map<string, NodeJS.Timeout> = new Map();
+    const fileSaveWatcher = vscode.workspace.onDidSaveTextDocument(async (document) => {
+        const currentConfig = getConfig();
+        if (!currentConfig.incrementalIndexing) {
+            return;
+        }
+        const filePath = document.uri.fsPath;
+        // Debounce: don't re-index the same file within 2 seconds
+        if (reindexTimers.has(filePath)) {
+            clearTimeout(reindexTimers.get(filePath)!);
+        }
+        reindexTimers.set(filePath, setTimeout(async () => {
+            reindexTimers.delete(filePath);
+            try {
+                await axios.post(`${currentConfig.apiUrl}/ingest/file`, {
+                    path: filePath,
+                    content: document.getText(),
+                });
+            } catch (err) {
+                console.error(`Incremental re-index failed for ${filePath}:`, err);
+            }
+        }, 2000));
+    });
+    context.subscriptions.push(fileSaveWatcher);
 
     // Auto-ingest on startup if enabled
     if (config.autoIngest) {
@@ -1091,6 +1660,35 @@ export function activate(context: vscode.ExtensionContext) {
     provider.refresh();
 }
 
+function gatherEditorContext(): EditorContextPayload {
+    const editor = vscode.window.activeTextEditor;
+    let gitDiff: string | undefined;
+    try {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceRoot) {
+            gitDiff = execSync('git diff --cached --no-color 2>/dev/null || git diff --no-color 2>/dev/null', {
+                cwd: workspaceRoot,
+                encoding: 'utf-8',
+                timeout: 3000,
+                maxBuffer: 100_000,
+            }).trim() || undefined;
+        }
+    } catch {
+        gitDiff = undefined;
+    }
+    return {
+        current_file: editor?.document.uri.fsPath,
+        current_selection: editor?.document.getText(editor.selection) || undefined,
+        cursor_line: editor?.selection.active.line,
+        open_files: vscode.window.tabGroups.all
+            .flatMap(g => g.tabs)
+            .map(t => (t.input as any)?.uri?.fsPath)
+            .filter(Boolean) as string[],
+        git_diff: gitDiff,
+        recent_files: [],
+    };
+}
+
 async function queryContextForge(question: string, config: ContextForgeConfig, webviewProvider: ContextForgeWebviewProvider) {
     const progress = vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -1100,11 +1698,14 @@ async function queryContextForge(question: string, config: ContextForgeConfig, w
         try {
             progress.report({ increment: 0, message: "Sending query..." });
 
+            const editorContext = gatherEditorContext();
+
             const response = await axios.post(`${config.apiUrl}/query`, {
                 query: question,
                 max_tokens: 512,
                 enable_web_search: config.enableWebSearch,
                 top_k: config.maxResults,
+                editor_context: editorContext,
                 auto_terminal_mode: config.autoTerminalMode,
                 auto_terminal_timeout: config.autoTerminalTimeout,
                 auto_terminal_whitelist: config.autoTerminalWhitelist

@@ -91,6 +91,8 @@ class RAGPipeline:
         top_k: int = VECTOR_TOP_K,
         use_cache: bool = True,
         task_scope: Optional[str] = None,
+        use_hierarchical: bool = False,
+        editor_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve relevant contexts from vector index with optional caching.
 
@@ -100,6 +102,10 @@ class RAGPipeline:
             use_cache: Whether to use the retrieval cache.
             task_scope: Task scope key for task-scoped retrieval
                         (e.g. 'find_bugs', 'explain', 'refactor', 'test').
+            use_hierarchical: Use HierarchicalRetriever instead of direct search.
+            editor_context: Optional editor state dict with keys like
+                ``current_file``, ``current_selection``, ``open_files``,
+                ``cursor_line``, ``recent_files``, ``git_diff``.
         """
         # Check cache first
         if use_cache and self._cache:
@@ -109,20 +115,29 @@ class RAGPipeline:
                 return cached
 
         try:
-            search_payload: Dict[str, Any] = {"query": query, "top_k": top_k}
-            if task_scope and task_scope != "general":
-                search_payload["task_scope"] = task_scope
-                search_payload["expand_graph"] = True  # Enable graph expansion for scoped queries
+            results: List[Dict[str, Any]] = []
 
-            response = requests.post(
-                f"{self.vector_index_url}/search",
-                json=search_payload,
-                timeout=int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60"))
-            )
-            response.raise_for_status()
+            if use_hierarchical:
+                results = self._retrieve_hierarchical(query, top_k, task_scope)
+            else:
+                search_payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+                if task_scope and task_scope != "general":
+                    search_payload["task_scope"] = task_scope
+                    search_payload["expand_graph"] = True
 
-            data = response.json()
-            results = data.get("results", [])
+                response = requests.post(
+                    f"{self.vector_index_url}/search",
+                    json=search_payload,
+                    timeout=int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60"))
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                results = data.get("results", [])
+
+            # Boost / inject editor-context results
+            if editor_context:
+                results = self._apply_editor_context(results, editor_context)
 
             # Cache the results
             if use_cache and self._cache and results:
@@ -133,6 +148,70 @@ class RAGPipeline:
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Hierarchical retrieval helper
+    # ------------------------------------------------------------------
+
+    def _retrieve_hierarchical(
+        self, query: str, top_k: int, task_scope: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Delegate retrieval to the HierarchicalRetriever (HTTP-based)."""
+        try:
+            from services.retrieval import HierarchicalRetriever, RetrievalRequest
+            retriever = HierarchicalRetriever(vector_index_url=self.vector_index_url)
+            request = RetrievalRequest(query=query, top_k=top_k, task_scope=task_scope)
+            return retriever.retrieve_as_dicts(request)
+        except Exception as e:
+            logger.warning(f"Hierarchical retrieval failed, falling back: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # Editor context helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_editor_context(
+        results: List[Dict[str, Any]],
+        editor_context: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Boost and inject results based on editor state."""
+        current_file = editor_context.get("current_file")
+        open_files = set(editor_context.get("open_files") or [])
+        selection = editor_context.get("current_selection")
+        git_diff = editor_context.get("git_diff")
+
+        # Boost results whose file matches current file or open tabs
+        for r in results:
+            file_path = (r.get("meta") or {}).get("file_path", "")
+            if current_file and file_path and current_file.endswith(file_path):
+                r["score"] = r.get("score", 0) * 1.5
+            elif open_files and any(file_path and of.endswith(file_path) for of in open_files):
+                r["score"] = r.get("score", 0) * 1.2
+
+        # Prepend selection as highest-priority context
+        if selection and selection.strip():
+            results.insert(0, {
+                "text": selection,
+                "score": 2.0,
+                "meta": {"source": "editor_selection", "file_path": current_file or ""},
+                "content_type": "code",
+                "source": "editor",
+            })
+
+        # Append git diff as supplementary context
+        if git_diff and git_diff.strip():
+            results.append({
+                "text": git_diff[:4000],
+                "score": 0.5,
+                "meta": {"source": "git_diff"},
+                "content_type": "diff",
+                "source": "editor",
+            })
+
+        # Re-sort by score
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return results
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
@@ -168,11 +247,39 @@ class RAGPipeline:
         """Summarize contexts if there are too many or they're too long."""
         if len(contexts) <= max_contexts:
             return contexts
-        
-        # For now, just take the top contexts by score
-        # In a more sophisticated implementation, we could use LLM to summarize
         sorted_contexts = sorted(contexts, key=lambda x: x.get("score", 0), reverse=True)
         return sorted_contexts[:max_contexts]
+
+    def _budget_contexts(
+        self,
+        contexts: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Trim contexts to fit within the model's context window.
+
+        Replaces naive ``summarize_contexts`` with token-aware budgeting.
+        """
+        if max_tokens is None:
+            max_tokens = int(os.getenv("RAG_CONTEXT_BUDGET", "16384"))
+
+        chars_per_token = 4
+        max_chars = max_tokens * chars_per_token
+
+        budgeted: List[Dict[str, Any]] = []
+        total_chars = 0
+
+        for ctx in sorted(contexts, key=lambda x: x.get("score", 0), reverse=True):
+            text = ctx.get("text", "")
+            if total_chars + len(text) > max_chars:
+                remaining = max_chars - total_chars
+                if remaining > 200:
+                    ctx = {**ctx, "text": text[:remaining] + "\n... (truncated)"}
+                    budgeted.append(ctx)
+                break
+            budgeted.append(ctx)
+            total_chars += len(text)
+
+        return budgeted
     
     def format_contexts(self, contexts: List[Dict[str, Any]]) -> str:
         """Format contexts for inclusion in prompt."""
@@ -223,7 +330,9 @@ class RAGPipeline:
     def answer_question(self, question: str,
                        enable_web_search: Optional[bool] = None,
                        max_tokens: int = 512,
-                       task_scope: Optional[str] = None) -> Dict[str, Any]:
+                       task_scope: Optional[str] = None,
+                       editor_context: Optional[Dict[str, Any]] = None,
+                       use_hierarchical: bool = False) -> Dict[str, Any]:
         """Main RAG pipeline: retrieve, search, and generate answer.
 
         Args:
@@ -232,12 +341,19 @@ class RAGPipeline:
             max_tokens: Max tokens for the LLM response.
             task_scope: Task scope key for task-scoped retrieval
                         (e.g. 'find_bugs', 'explain', 'refactor').
+            editor_context: Optional editor state dict.
+            use_hierarchical: Use HierarchicalRetriever.
         """
         start_time = datetime.now()
 
         # Step 1: Retrieve contexts from vector index
         logger.info(f"Retrieving contexts for: {question}")
-        contexts = self.retrieve_contexts(question, task_scope=task_scope)
+        contexts = self.retrieve_contexts(
+            question,
+            task_scope=task_scope,
+            use_hierarchical=use_hierarchical,
+            editor_context=editor_context,
+        )
         
         # Step 2: Optionally search the web
         web_results = []
@@ -245,8 +361,8 @@ class RAGPipeline:
             logger.info("Searching web for additional context")
             web_results = self.search_web(question)
         
-        # Step 3: Summarize contexts if needed
-        contexts = self.summarize_contexts(contexts)
+        # Step 3: Budget contexts to fit model window (token-aware)
+        contexts = self._budget_contexts(contexts)
         
         # Step 4: Compose prompt
         prompt = self.compose_prompt(question, contexts, web_results)

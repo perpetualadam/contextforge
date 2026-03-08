@@ -2,9 +2,9 @@
 ContextForge Hierarchical Retrieval Service.
 
 Implements multi-level context retrieval:
-1. Module-level embeddings → fast filter
-2. File-level embeddings → select relevant files  
-3. Function-level embeddings → final context for LLM
+1. Module-level embeddings -> fast filter
+2. File-level embeddings -> select relevant files
+3. Function-level embeddings -> final context for LLM
 4. Optional: test outcomes + git history + commit hashes
 
 Copyright (c) 2025 ContextForge
@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
+import requests as http_requests
+
 logger = logging.getLogger(__name__)
+
+VECTOR_INDEX_URL = os.getenv("VECTOR_INDEX_URL", "http://vector-index:8001")
+VECTOR_SEARCH_TIMEOUT = int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60"))
 
 
 class ContextLevel(str, Enum):
@@ -53,127 +58,138 @@ class RetrievalRequest:
     include_git_history: bool = False
     max_context_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", "32768"))
     filters: Dict[str, Any] = field(default_factory=dict)
+    task_scope: Optional[str] = None
 
 
 class HierarchicalRetriever:
     """
     Hierarchical context retriever.
-    
+
     Implements a multi-stage retrieval strategy:
     1. Module-level: Fast filtering to identify relevant modules
     2. File-level: Select most relevant files within modules
     3. Function-level: Extract specific functions and code blocks
-    
-    This approach is efficient for large codebases (500k+ LOC).
+
+    Uses HTTP calls to the vector-index service so it works in Docker.
     """
-    
-    def __init__(self):
-        from services.config import get_config
-        self._config = get_config()
-        self._vector_index = None
-        self._cache = None
-    
-    @property
-    def vector_index(self):
-        """Lazy load vector index."""
-        if self._vector_index is None:
-            from services.vector_index.index import VectorIndex
-            self._vector_index = VectorIndex()
-        return self._vector_index
-    
-    @property
-    def cache(self):
-        """Lazy load cache."""
-        if self._cache is None:
-            from services.cache import get_cache
-            self._cache = get_cache()
-        return self._cache
-    
+
+    def __init__(self, vector_index_url: str = None):
+        self.vector_index_url = vector_index_url or VECTOR_INDEX_URL
+
+    def _search(self, query: str, top_k: int = 10,
+                task_scope: str = None, **kwargs) -> List[Dict[str, Any]]:
+        """Search the vector index via HTTP and return the results list."""
+        try:
+            payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+            if task_scope:
+                payload["task_scope"] = task_scope
+            payload.update(kwargs)
+
+            resp = http_requests.post(
+                f"{self.vector_index_url}/search",
+                json=payload,
+                timeout=VECTOR_SEARCH_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("results", [])
+        except Exception as e:
+            logger.warning(f"Vector search failed: {e}")
+            return []
+
     def retrieve(self, request: RetrievalRequest) -> List[ContextResult]:
         """
         Perform hierarchical retrieval.
-        
+
         Args:
             request: RetrievalRequest with query and parameters
-            
+
         Returns:
             List of ContextResult ordered by relevance
         """
-        # Check cache first
-        cached = self.cache.get_results(
-            request.query, 
-            request.top_k,
-            levels=[l.value for l in request.levels]
-        )
-        if cached:
-            return [ContextResult(**r) for r in cached]
-        
         results = []
-        
+
         # Stage 1: Module-level retrieval
         if ContextLevel.MODULE in request.levels:
-            module_results = self._retrieve_modules(request.query, top_k=5)
+            module_results = self._retrieve_modules(
+                request.query, top_k=5, task_scope=request.task_scope
+            )
             relevant_modules = [r.module_name for r in module_results if r.module_name]
             logger.debug(f"Module filter: {len(relevant_modules)} modules")
         else:
             relevant_modules = None
-        
+
         # Stage 2: File-level retrieval
         if ContextLevel.FILE in request.levels:
             file_results = self._retrieve_files(
-                request.query, 
+                request.query,
                 top_k=request.top_k * 2,
-                modules=relevant_modules
+                modules=relevant_modules,
+                task_scope=request.task_scope,
             )
             relevant_files = [r.file_path for r in file_results if r.file_path]
             results.extend(file_results[:request.top_k // 2])
             logger.debug(f"File filter: {len(relevant_files)} files")
         else:
             relevant_files = None
-        
+
         # Stage 3: Function-level retrieval
         if ContextLevel.FUNCTION in request.levels:
             function_results = self._retrieve_functions(
                 request.query,
                 top_k=request.top_k,
                 files=relevant_files,
-                modules=relevant_modules
+                modules=relevant_modules,
+                task_scope=request.task_scope,
             )
             results.extend(function_results)
-        
+
         # Include test context if requested
         if request.include_tests:
             test_results = self._retrieve_test_context(request.query, top_k=3)
             results.extend(test_results)
-        
+
         # Include git history if requested
         if request.include_git_history:
             git_results = self._retrieve_git_context(request.query, top_k=3)
             results.extend(git_results)
-        
+
         # Sort by score and deduplicate
         results = self._deduplicate_and_rank(results)
         results = results[:request.top_k]
-        
-        # Cache results
-        self.cache.set_results(
-            request.query,
-            [self._result_to_dict(r) for r in results],
-            request.top_k,
-            levels=[l.value for l in request.levels]
-        )
 
         return results
 
-    def _retrieve_modules(self, query: str, top_k: int = 5) -> List[ContextResult]:
+    def retrieve_as_dicts(self, request: RetrievalRequest) -> List[Dict[str, Any]]:
+        """Retrieve and return results as plain dicts (RAG-pipeline compatible)."""
+        context_results = self.retrieve(request)
+        return [
+            {
+                "text": r.content,
+                "score": r.score,
+                "meta": r.metadata,
+                "content_type": r.metadata.get("content_type", "code"),
+                "source": "hierarchical",
+            }
+            for r in context_results
+        ]
+
+    # ------------------------------------------------------------------
+    # Stage helpers
+    # ------------------------------------------------------------------
+
+    def _retrieve_modules(self, query: str, top_k: int = 5,
+                          task_scope: str = None) -> List[ContextResult]:
         """Retrieve at module level for fast filtering."""
-        results = self.vector_index.search(query, top_k=top_k)
+        search_results = self._search(query, top_k=top_k, task_scope=task_scope)
 
         module_results = []
         seen_modules = set()
 
-        for r in results:
-            module = r.get("metadata", {}).get("module_name")
+        for r in search_results:
+            meta = r.get("meta", {})
+            module_context = meta.get("module_context", {})
+            module = module_context.get("module_name") or meta.get("module_name", "")
             if module and module not in seen_modules:
                 seen_modules.add(module)
                 module_results.append(ContextResult(
@@ -181,63 +197,75 @@ class HierarchicalRetriever:
                     level=ContextLevel.MODULE,
                     score=r.get("score", 0.0),
                     module_name=module,
-                    metadata=r.get("metadata", {})
+                    metadata=meta,
                 ))
 
         return module_results
 
     def _retrieve_files(self, query: str, top_k: int = 10,
-                        modules: List[str] = None) -> List[ContextResult]:
-        """Retrieve at file level."""
-        filters = {}
-        if modules:
-            filters["module_name"] = modules
-
-        results = self.vector_index.search(query, top_k=top_k, filters=filters)
+                        modules: List[str] = None,
+                        task_scope: str = None) -> List[ContextResult]:
+        """Retrieve at file level, optionally filtered to modules client-side."""
+        search_results = self._search(query, top_k=top_k, task_scope=task_scope)
 
         file_results = []
         seen_files = set()
 
-        for r in results:
-            file_path = r.get("metadata", {}).get("file_path")
+        for r in search_results:
+            meta = r.get("meta", {})
+            file_path = meta.get("file_path", "")
+
+            # Client-side module filter
+            if modules:
+                module_context = meta.get("module_context", {})
+                result_module = module_context.get("module_name") or meta.get("module_name", "")
+                if result_module and result_module not in modules:
+                    continue
+
             if file_path and file_path not in seen_files:
                 seen_files.add(file_path)
                 file_results.append(ContextResult(
-                    content=r.get("content", ""),
+                    content=r.get("text", ""),
                     level=ContextLevel.FILE,
                     score=r.get("score", 0.0),
                     file_path=file_path,
-                    module_name=r.get("metadata", {}).get("module_name"),
-                    metadata=r.get("metadata", {})
+                    module_name=(meta.get("module_context") or {}).get("module_name"),
+                    metadata=meta,
                 ))
 
         return file_results
 
     def _retrieve_functions(self, query: str, top_k: int = 10,
-                           files: List[str] = None,
-                           modules: List[str] = None) -> List[ContextResult]:
+                            files: List[str] = None,
+                            modules: List[str] = None,
+                            task_scope: str = None) -> List[ContextResult]:
         """Retrieve at function/chunk level for precise context."""
-        filters = {}
-        if files:
-            filters["file_path"] = files
-        elif modules:
-            filters["module_name"] = modules
-
-        results = self.vector_index.search(query, top_k=top_k, filters=filters)
+        search_results = self._search(query, top_k=top_k, task_scope=task_scope)
 
         function_results = []
-        for r in results:
-            meta = r.get("metadata", {})
+        for r in search_results:
+            meta = r.get("meta", {})
+            file_path = meta.get("file_path", "")
+
+            # Client-side file/module filter
+            if files and file_path not in files:
+                continue
+            if modules and not files:
+                result_module = (meta.get("module_context") or {}).get("module_name", "")
+                if result_module and result_module not in modules:
+                    continue
+
+            func_name = meta.get("function_name") or meta.get("symbol_name")
             function_results.append(ContextResult(
-                content=r.get("content", ""),
-                level=ContextLevel.FUNCTION if meta.get("function_name") else ContextLevel.CHUNK,
+                content=r.get("text", ""),
+                level=ContextLevel.FUNCTION if func_name else ContextLevel.CHUNK,
                 score=r.get("score", 0.0),
-                file_path=meta.get("file_path"),
-                module_name=meta.get("module_name"),
-                function_name=meta.get("function_name"),
+                file_path=file_path,
+                module_name=(meta.get("module_context") or {}).get("module_name"),
+                function_name=func_name,
                 start_line=meta.get("start_line"),
                 end_line=meta.get("end_line"),
-                metadata=meta
+                metadata=meta,
             ))
 
         return function_results
@@ -248,7 +276,6 @@ class HierarchicalRetriever:
             from services.metrics.test_correlation import CorrelationTracker
             tracker = CorrelationTracker()
 
-            # Find tests related to the query terms
             correlations = tracker.get_correlations(query)
 
             results = []
@@ -270,8 +297,7 @@ class HierarchicalRetriever:
         try:
             import subprocess
 
-            # Search commit messages for query terms
-            terms = query.lower().split()[:3]  # Use first 3 terms
+            terms = query.lower().split()[:3]
             search_pattern = "|".join(terms)
 
             cmd = ["git", "log", "--oneline", "-n", str(top_k * 2),
@@ -290,7 +316,7 @@ class HierarchicalRetriever:
                     results.append(ContextResult(
                         content=f"Commit {commit_hash}: {message}",
                         level=ContextLevel.CHUNK,
-                        score=0.3,  # Lower score for git context
+                        score=0.3,
                         metadata={"type": "git_commit", "commit_hash": commit_hash}
                     ))
             return results
@@ -304,7 +330,6 @@ class HierarchicalRetriever:
         unique = []
 
         for r in sorted(results, key=lambda x: x.score, reverse=True):
-            # Create unique key from file + function + line
             key = (r.file_path, r.function_name, r.start_line)
             if key not in seen:
                 seen.add(key)
@@ -313,7 +338,7 @@ class HierarchicalRetriever:
         return unique
 
     def _result_to_dict(self, result: ContextResult) -> Dict[str, Any]:
-        """Convert ContextResult to dictionary for caching."""
+        """Convert ContextResult to dictionary."""
         return {
             "content": result.content,
             "level": result.level.value,
@@ -328,11 +353,7 @@ class HierarchicalRetriever:
 
 
 def semantic_search(query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-    """
-    Perform semantic search using the vector index.
-
-    This is a convenience function for simple semantic search.
-    """
+    """Perform semantic search using the vector index."""
     retriever = HierarchicalRetriever()
     request = RetrievalRequest(
         query=query,
@@ -344,11 +365,7 @@ def semantic_search(query: str, top_k: int = 10) -> List[Dict[str, Any]]:
 
 
 def lexical_filter(results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-    """
-    Apply lexical filtering to semantic search results.
-
-    Boosts results that contain exact query terms.
-    """
+    """Apply lexical filtering to semantic search results."""
     query_terms = set(query.lower().split())
 
     def score_lexical_match(result: Dict[str, Any]) -> float:
@@ -356,18 +373,15 @@ def lexical_filter(results: List[Dict[str, Any]], query: str) -> List[Dict[str, 
         matches = sum(1 for term in query_terms if term in content)
         return matches / len(query_terms) if query_terms else 0
 
-    # Add lexical boost to score
     for result in results:
         lexical_score = score_lexical_match(result)
         result["lexical_score"] = lexical_score
         result["combined_score"] = result.get("score", 0) * 0.7 + lexical_score * 0.3
 
-    # Re-sort by combined score
     results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
     return results
 
 
-# Singleton instance
 _retriever: Optional[HierarchicalRetriever] = None
 
 
@@ -377,4 +391,3 @@ def get_retriever() -> HierarchicalRetriever:
     if _retriever is None:
         _retriever = HierarchicalRetriever()
     return _retriever
-

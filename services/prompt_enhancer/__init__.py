@@ -644,11 +644,12 @@ class ContextAggregator:
         """
         context = ContextData()
 
-        # Helper for empty async result
         async def empty_list():
             return []
 
-        # Gather in parallel
+        async def empty_dict():
+            return {}
+
         tasks = []
 
         tasks.append(self._fetch_embeddings(query))
@@ -663,9 +664,13 @@ class ContextAggregator:
         else:
             tasks.append(empty_list())
 
+        if include_deps and file_path:
+            tasks.append(self._fetch_dependencies(file_path))
+        else:
+            tasks.append(empty_dict())
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process results
         if not isinstance(results[0], Exception):
             context.file_embeddings = results[0]
 
@@ -674,6 +679,9 @@ class ContextAggregator:
 
         if not isinstance(results[2], Exception):
             context.test_results = results[2]
+
+        if not isinstance(results[3], Exception) and isinstance(results[3], dict):
+            context.dependencies = results[3]
 
         return context
 
@@ -725,6 +733,25 @@ class ContextAggregator:
         except Exception as e:
             logger.debug(f"Could not fetch test results: {e}")
         return []
+
+    async def _fetch_dependencies(self, file_path: str) -> Dict[str, List[str]]:
+        """Fetch import/dependency info from the dependency analysis endpoint."""
+        import aiohttp
+        try:
+            api_gateway_url = os.getenv("API_GATEWAY_URL", "http://localhost:8080")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_gateway_url}/analysis/dependencies",
+                    json={"file_path": file_path, "analyze_impact": False},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        imports = data.get("imports", [])
+                        return {file_path: imports} if imports else {}
+        except Exception as e:
+            logger.debug(f"Could not fetch dependencies: {e}")
+        return {}
 
 
 # Singleton accessor

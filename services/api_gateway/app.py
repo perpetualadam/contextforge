@@ -56,6 +56,15 @@ try:
 except ImportError:
     REMOTE_AGENTS_ENABLED = False
 
+# Import feature routes (inline completion, inline edit, agent mode, etc.)
+try:
+    from feature_routes import router as feature_router
+    FEATURE_ROUTES_ENABLED = True
+except ImportError:
+    FEATURE_ROUTES_ENABLED = False
+    _early_logger = logging.getLogger(__name__)
+    _early_logger.warning("Feature routes not available")
+
 # Early logger for import-time warnings
 _early_logger = logging.getLogger(__name__)
 
@@ -334,6 +343,11 @@ if REMOTE_AGENTS_ENABLED:
     app.include_router(task_router)
     app.include_router(ws_router)
 
+# Register feature routes (completion, inline-edit, agent, smart-apply, etc.)
+if FEATURE_ROUTES_ENABLED:
+    app.include_router(feature_router)
+    logger.info("Feature routes registered (completion, inline-edit, agent, docs, composer, etc.)")
+
 
 # Pydantic models with input validation
 class IngestRequest(BaseModel):
@@ -351,15 +365,28 @@ class IngestRequest(BaseModel):
         return v
 
 
+class EditorContext(BaseModel):
+    """Optional editor state sent by VS Code extension or web frontend."""
+    current_file: Optional[str] = None
+    current_selection: Optional[str] = None
+    cursor_line: Optional[int] = None
+    open_files: Optional[List[str]] = None
+    recent_files: Optional[List[str]] = None
+    git_diff: Optional[str] = None
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
     max_tokens: int = Field(DEFAULT_OUTPUT_TOKENS, ge=1, le=MAX_OUTPUT_TOKENS)
     enable_web_search: Optional[bool] = None
     top_k: int = Field(10, ge=1, le=100)
     task_scope: Optional[str] = Field(None, description="Task scope for retrieval: find_bugs, explain, refactor, test, general")
+    editor_context: Optional[EditorContext] = None
     auto_terminal_mode: bool = False
     auto_terminal_timeout: int = Field(30, ge=1, le=300)
     auto_terminal_whitelist: Optional[List[str]] = Field(None, max_length=50)
+    project_rules: Optional[str] = Field(None, max_length=100000)
+    privacy_mode: bool = False
 
 
 class SearchRequest(BaseModel):
@@ -403,12 +430,23 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class AttachmentPayload(BaseModel):
+    name: str = ""
+    type: str = ""
+    data: Optional[str] = None
+    extracted_text: Optional[str] = None
+
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     max_tokens: int = Field(1024, ge=1, le=MAX_OUTPUT_TOKENS)
     enable_web_search: bool = False
     enable_context: bool = True
     provider: Optional[str] = Field(None, max_length=50, description="Specific LLM provider to use (e.g., 'openai', 'anthropic', 'ollama')")
+    editor_context: Optional[EditorContext] = None
+    attachments: Optional[List[AttachmentPayload]] = None
+    resolved_mentions: Optional[str] = None
+    project_rules: Optional[str] = Field(None, max_length=100000)
+    privacy_mode: bool = False
 
 class CommitMessageRequest(BaseModel):
     diff: str
@@ -627,6 +665,86 @@ async def ingest_repository(
         ))
         logger.error("Ingestion failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+
+
+class SingleFileIngestRequest(BaseModel):
+    """Request to ingest (or re-ingest) a single file."""
+    path: str = Field(..., max_length=2048)
+    content: Optional[str] = Field(None, description="File content (if not provided, backend will try to read it)")
+
+    @field_validator('path')
+    @classmethod
+    def validate_path(cls, v):
+        if '..' in v:
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
+@app.post("/ingest/file")
+async def ingest_single_file(
+    request: SingleFileIngestRequest,
+    http_request: Request,
+    api_key: Optional[str] = Depends(verify_api_key),
+):
+    """Ingest or re-ingest a single file (incremental indexing).
+
+    1. Sends the file to the preprocessor ``/chunk`` endpoint.
+    2. Removes old chunks for that file from the vector index.
+    3. Inserts the new chunks.
+    """
+    await check_rate_limit(http_request)
+
+    try:
+        logger.info("Single-file ingest", path=request.path)
+
+        file_content = request.content
+        if file_content is None:
+            file_content = ""
+
+        # Step 1: Chunk the file via preprocessor
+        chunk_payload = {
+            "text": file_content,
+            "meta": {"file_path": request.path},
+        }
+        chunk_response = requests.post(
+            f"{PREPROCESSOR_URL}/chunk",
+            json=chunk_payload,
+            timeout=INGEST_PREPROCESS_TIMEOUT,
+        )
+        chunk_response.raise_for_status()
+        chunks = chunk_response.json().get("chunks", [])
+
+        # Step 2: Remove old chunks for this file
+        try:
+            requests.delete(
+                f"{VECTOR_INDEX_URL}/index/file/{requests.utils.quote(request.path, safe='')}",
+                timeout=SERVICE_REQUEST_TIMEOUT,
+            )
+        except Exception as rm_err:
+            logger.warning(f"Could not remove old chunks for {request.path}: {rm_err}")
+
+        # Step 3: Insert new chunks
+        if chunks:
+            idx_response = requests.post(
+                f"{VECTOR_INDEX_URL}/index/insert",
+                json={"chunks": chunks},
+                timeout=INGEST_INDEX_TIMEOUT,
+            )
+            idx_response.raise_for_status()
+            idx_data = idx_response.json()
+        else:
+            idx_data = {"indexed_count": 0}
+
+        return {
+            "status": "success",
+            "path": request.path,
+            "chunks_indexed": idx_data.get("indexed_count", 0),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error("Single-file ingest failed", path=request.path, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Single-file ingest failed: {e}")
 
 
 @app.get("/ingest/status")
@@ -897,6 +1015,7 @@ async def query_context(
             enable_web_search=request.enable_web_search,
             max_tokens=request.max_tokens,
             task_scope=request.task_scope,
+            editor_context=request.editor_context.model_dump() if request.editor_context else None,
         )
 
         # Auto-terminal execution if enabled
@@ -1160,12 +1279,30 @@ async def chat_conversation(
         # Combine conversation context with the latest message
         enhanced_query = conversation_context + latest_message
 
+        # Feature #5: Append resolved @ mention content
+        if request.resolved_mentions:
+            enhanced_query += f"\n\nRESOLVED CONTEXT:\n{request.resolved_mentions[:50000]}"
+
+        # Feature #9: Append attachment content
+        if request.attachments:
+            for att in request.attachments:
+                if att.extracted_text:
+                    enhanced_query += f"\n\n[Attachment: {att.name}]\n{att.extracted_text[:10000]}"
+                elif att.type and att.type.startswith("image/") and att.data:
+                    enhanced_query += f"\n\n[Image attached: {att.name}]"
+
+        # Feature #7: Prepend project rules as system context
+        rules_context = ""
+        if request.project_rules:
+            rules_context = f"\nPROJECT RULES:\n{request.project_rules[:10000]}\n"
+
         # Use RAG pipeline for context-aware response if enabled
         if request.enable_context:
             response = rag_pipeline.answer_question(
                 question=enhanced_query,
                 enable_web_search=request.enable_web_search,
-                max_tokens=request.max_tokens
+                max_tokens=request.max_tokens,
+                editor_context=request.editor_context.model_dump() if request.editor_context else None,
             )
 
             return {

@@ -100,6 +100,10 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 case 'loadSession':
                     this.loadSession(data.sessionId);
                     break;
+                case 'forkSession':
+                    this.forkSession(data.sessionId || this._currentSession.id);
+                    vscode.window.showInformationMessage('Conversation forked');
+                    break;
             }
         });
 
@@ -156,6 +160,52 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             // Show typing indicator
             this.showTypingIndicator();
 
+            // Gather editor context
+            const editor = vscode.window.activeTextEditor;
+            let gitDiff: string | undefined;
+            try {
+                const { execSync } = require('child_process');
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (workspaceRoot) {
+                    gitDiff = execSync('git diff --cached --no-color 2>/dev/null || git diff --no-color 2>/dev/null', {
+                        cwd: workspaceRoot, encoding: 'utf-8', timeout: 3000, maxBuffer: 100_000,
+                    }).trim() || undefined;
+                }
+            } catch { gitDiff = undefined; }
+            const editorContext = {
+                current_file: editor?.document.uri.fsPath,
+                current_selection: editor?.document.getText(editor.selection) || undefined,
+                cursor_line: editor?.selection.active.line,
+                open_files: vscode.window.tabGroups.all
+                    .flatMap(g => g.tabs)
+                    .map(t => (t.input as any)?.uri?.fsPath)
+                    .filter(Boolean),
+                git_diff: gitDiff,
+            };
+
+            // Feature #5: Parse @ mentions before sending
+            const { resolvedContent, cleanMessage } = await this.resolveAtMentions(messageContent);
+
+            // Feature #9: Include attachments as base64 for multi-modal LLM
+            const attachmentPayloads = (attachments || []).map(a => ({
+                name: a.name, type: a.type, data: a.data,
+                extracted_text: a.extractedText,
+            }));
+
+            // Feature #7: Load project rules
+            let projectRules: string | undefined;
+            try {
+                const path = require('path');
+                const fs = require('fs');
+                const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (ws) {
+                    for (const c of ['.contextforge-rules', '.contextforge/rules.md']) {
+                        const p = path.join(ws, c);
+                        if (fs.existsSync(p)) { projectRules = fs.readFileSync(p, 'utf-8'); break; }
+                    }
+                }
+            } catch {}
+
             // Send to API
             const response = await axios.post(`${this._config.apiUrl}/chat`, {
                 messages: this._currentSession.messages.map(msg => ({
@@ -164,7 +214,12 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 })),
                 max_tokens: 1024,
                 enable_web_search: this._config.enableWebSearch,
-                enable_context: true
+                enable_context: true,
+                editor_context: editorContext,
+                attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
+                resolved_mentions: resolvedContent || undefined,
+                project_rules: projectRules,
+                privacy_mode: (this._config as any).privacyMode || false,
             });
 
             // Add assistant response
@@ -320,6 +375,104 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             });
             this._view.show?.(true);
         }
+    }
+
+    // ── Feature #5: @ mention resolution ──
+    private async resolveAtMentions(message: string): Promise<{ resolvedContent: string; cleanMessage: string }> {
+        let resolvedContent = '';
+        const cleanMessage = message;
+        const mentionPattern = /@(file|symbol|folder|web|docs|git):?([^\s]+)?/g;
+        let match;
+        while ((match = mentionPattern.exec(message)) !== null) {
+            const type = match[1];
+            const arg = match[2] || '';
+            try {
+                switch (type) {
+                    case 'file': {
+                        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                        if (ws && arg) {
+                            const fs = require('fs');
+                            const path = require('path');
+                            const filePath = path.join(ws, arg);
+                            if (fs.existsSync(filePath)) {
+                                const content = fs.readFileSync(filePath, 'utf-8').substring(0, 50000);
+                                resolvedContent += `\n\n[File: ${arg}]\n${content}`;
+                            }
+                        }
+                        break;
+                    }
+                    case 'folder': {
+                        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                        if (ws && arg) {
+                            const fs = require('fs');
+                            const path = require('path');
+                            const dirPath = path.join(ws, arg);
+                            if (fs.existsSync(dirPath)) {
+                                const files = fs.readdirSync(dirPath).slice(0, 50);
+                                resolvedContent += `\n\n[Folder: ${arg}]\n${files.join('\n')}`;
+                            }
+                        }
+                        break;
+                    }
+                    case 'symbol': {
+                        const resp = await axios.post(`${this._config.apiUrl}/symbols/lookup`, {
+                            symbol: arg, kind: 'definition',
+                        }, { timeout: 5000 });
+                        if (resp.data?.content) {
+                            resolvedContent += `\n\n[Symbol: ${arg}]\n${resp.data.content}`;
+                        }
+                        break;
+                    }
+                    case 'git': {
+                        const { execSync } = require('child_process');
+                        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                        if (ws) {
+                            const cmd = arg === 'log' ? 'git log --oneline -20' :
+                                       arg === 'status' ? 'git status' :
+                                       'git diff --no-color';
+                            const out = execSync(cmd, { cwd: ws, encoding: 'utf-8', timeout: 5000 }).substring(0, 10000);
+                            resolvedContent += `\n\n[Git: ${arg || 'diff'}]\n${out}`;
+                        }
+                        break;
+                    }
+                    case 'web': {
+                        resolvedContent += `\n\n[Web search requested: ${arg}]`;
+                        break;
+                    }
+                    case 'docs': {
+                        const resp = await axios.post(`${this._config.apiUrl}/docs/search`, {
+                            query: arg, top_k: 5,
+                        }, { timeout: 5000 });
+                        const docs = resp.data?.results || [];
+                        if (docs.length > 0) {
+                            resolvedContent += `\n\n[Docs: ${arg}]\n` + docs.map((d: any) => d.text).join('\n\n');
+                        }
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.error(`Failed to resolve @${type}:${arg}:`, e);
+            }
+        }
+        return { resolvedContent, cleanMessage };
+    }
+
+    // ── Feature #18: Conversation branching ──
+    private forkSession(sessionId: string): ChatSession | null {
+        const source = this._sessions.find(s => s.id === sessionId);
+        if (!source) { return null; }
+        const forked: ChatSession = {
+            id: this.generateId(),
+            messages: source.messages.map(m => ({ ...m, id: this.generateId() })),
+            title: `Fork: ${source.title}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+        this._sessions.unshift(forked);
+        this._currentSession = forked;
+        this.saveChatHistory();
+        this.updateWebview();
+        return forked;
     }
 
     private async handleFileUpload(file: any) {
@@ -720,6 +873,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     <div class="chat-header">
         <div class="chat-title">ContextForge Chat</div>
         <div class="chat-actions">
+            <button class="action-button" onclick="forkSession()" title="Fork Conversation">🔀</button>
             <button class="action-button" onclick="newSession()" title="New Chat">➕</button>
             <button class="action-button" onclick="clearHistory()" title="Clear History">🗑️</button>
         </div>
@@ -750,7 +904,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 <textarea
                     class="message-input"
                     id="messageInput"
-                    placeholder="Ask me anything about your code..."
+                    placeholder="Ask anything... Use @file:path @symbol:name @git @docs:query @web:query"
                     rows="1"
                 ></textarea>
                 <button class="send-button" id="sendButton" onclick="sendMessage()">Send</button>
@@ -1012,6 +1166,10 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({
                 type: 'newSession'
             });
+        }
+
+        function forkSession() {
+            vscode.postMessage({ type: 'forkSession' });
         }
 
         function clearHistory() {
