@@ -9,7 +9,7 @@ import axios from 'axios';
  */
 export type VCSProvider = 'github' | 'gitlab' | 'bitbucket';
 
-interface GitConfig {
+export interface GitConfig {
     gitEnabled: boolean;
     githubToken: string;
     gitlabToken: string;

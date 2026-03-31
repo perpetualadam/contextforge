@@ -5,13 +5,15 @@ import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ContextForgeChatProvider } from './chatPanel';
 import { ContextForgePromptProvider } from './promptPanel';
-import { GitIntegration } from './gitIntegration';
+import { GitIntegration, GitConfig, VCSProvider } from './gitIntegration';
 import { AgentStatusProvider } from './agentPanel';
 import { TaskPanelProvider } from './tools/taskPanel';
 import { DiagnosticsProvider } from './tools/diagnostics';
 
 interface ContextForgeConfig {
     apiUrl: string;
+    /** Base URL of the ContextForge web UI (Publish hub, chat dashboard). */
+    webUiUrl: string;
     autoIngest: boolean;
     maxResults: number;
     enableWebSearch: boolean;
@@ -26,6 +28,11 @@ interface ContextForgeConfig {
     allowedFileTypes: string[];
     gitEnabled: boolean;
     githubToken: string;
+    gitlabToken: string;
+    gitlabUrl: string;
+    bitbucketToken: string;
+    bitbucketUsername: string;
+    vcsProvider: string;
     autoCommitMessages: boolean;
     defaultBranch: string;
     incrementalIndexing: boolean;
@@ -33,6 +40,23 @@ interface ContextForgeConfig {
     enableInlineCompletion: boolean;
     enableAutoLint: boolean;
     [key: string]: any;
+}
+
+function toGitConfig(c: ContextForgeConfig): GitConfig {
+    const vp = c.vcsProvider;
+    const vcsProvider: VCSProvider =
+        vp === 'gitlab' || vp === 'bitbucket' ? vp : 'github';
+    return {
+        gitEnabled: c.gitEnabled,
+        githubToken: c.githubToken,
+        gitlabToken: c.gitlabToken,
+        gitlabUrl: c.gitlabUrl,
+        bitbucketToken: c.bitbucketToken,
+        bitbucketUsername: c.bitbucketUsername,
+        autoCommitMessages: c.autoCommitMessages,
+        defaultBranch: c.defaultBranch,
+        vcsProvider,
+    };
 }
 
 interface EditorContextPayload {
@@ -528,6 +552,7 @@ export function activate(context: vscode.ExtensionContext) {
         const config = vscode.workspace.getConfiguration('contextforge');
         return {
             apiUrl: config.get('apiUrl', 'http://localhost:8080'),
+            webUiUrl: config.get('webUiUrl', 'http://localhost:3000'),
             autoIngest: config.get('autoIngest', false),
             maxResults: config.get('maxResults', 10),
             enableWebSearch: config.get('enableWebSearch', true),
@@ -706,6 +731,12 @@ export function activate(context: vscode.ExtensionContext) {
         chatProvider.openChat();
     });
 
+    const openPublishHubCommand = vscode.commands.registerCommand('contextforge.openPublishHub', () => {
+        const c = getConfig();
+        const base = (c.webUiUrl || 'http://localhost:3000').replace(/\/$/, '');
+        vscode.env.openExternal(vscode.Uri.parse(`${base}/publish`));
+    });
+
     const openPromptGeneratorCommand = vscode.commands.registerCommand('contextforge.openPromptGenerator', () => {
         vscode.commands.executeCommand('contextforge.promptView.focus');
     });
@@ -726,12 +757,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (config.gitEnabled && vscode.workspace.workspaceFolders) {
         const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-        gitIntegration = new GitIntegration(workspaceRoot, {
-            gitEnabled: config.gitEnabled,
-            githubToken: config.githubToken,
-            autoCommitMessages: config.autoCommitMessages,
-            defaultBranch: config.defaultBranch
-        }, config.apiUrl);
+        gitIntegration = new GitIntegration(workspaceRoot, toGitConfig(config), config.apiUrl);
     }
 
     // Git Commands
@@ -879,12 +905,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (gitIntegration && newConfig.gitEnabled) {
                 gitIntegration = new GitIntegration(
                     vscode.workspace.workspaceFolders![0].uri.fsPath,
-                    {
-                        gitEnabled: newConfig.gitEnabled,
-                        githubToken: newConfig.githubToken,
-                        autoCommitMessages: newConfig.autoCommitMessages,
-                        defaultBranch: newConfig.defaultBranch
-                    },
+                    toGitConfig(newConfig),
                     newConfig.apiUrl
                 );
             }
@@ -1599,6 +1620,7 @@ export function activate(context: vscode.ExtensionContext) {
         showTerminalProcesses,
         toggleAutoTerminalCommand,
         openChatCommand,
+        openPublishHubCommand,
         openPromptGeneratorCommand,
         clearChatHistoryCommand,
         gitStatusCommand,

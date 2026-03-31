@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Bot, RefreshCw, Server, Cloud, Cpu, Network, HardDrive, CheckCircle, XCircle } from 'lucide-react';
 import { Button, Card, CardHeader, CardTitle, CardContent, Spinner, StatusIndicator } from '../components/ui';
 import { useStatus, useConnection } from '../store';
@@ -10,7 +10,7 @@ export function AgentsPage() {
   const { isOnline } = useConnection();
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(async () => {
     if (!isOnline) return;
     
     setLoading(true);
@@ -27,13 +27,13 @@ export function AgentsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isOnline, setLoading, setHealth, setAgents]);
 
   useEffect(() => {
-    loadStatus();
-    const interval = setInterval(loadStatus, 30000); // Refresh every 30s
+    void loadStatus();
+    const interval = setInterval(() => { void loadStatus(); }, 30000); // Refresh every 30s
     return () => clearInterval(interval);
-  }, [isOnline]);
+  }, [loadStatus]);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">

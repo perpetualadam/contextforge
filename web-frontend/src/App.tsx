@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/layout';
-import { ChatPage, QueryPage, IngestPage, AgentsPage, SettingsPage, HelpPage } from './pages';
+import { ChatPage, QueryPage, IngestPage, AgentsPage, SettingsPage, HelpPage, PublishPage } from './pages';
 
 function App() {
   return (
@@ -14,6 +14,7 @@ function App() {
         <Route path="/query" element={<QueryPage />} />
         <Route path="/ingest" element={<IngestPage />} />
         <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/publish" element={<PublishPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/help" element={<HelpPage />} />
         

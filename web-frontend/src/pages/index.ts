@@ -4,4 +4,5 @@ export { IngestPage } from './IngestPage';
 export { AgentsPage } from './AgentsPage';
 export { SettingsPage } from './SettingsPage';
 export { HelpPage } from './HelpPage';
+export { PublishPage } from './PublishPage';
 

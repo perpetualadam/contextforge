@@ -4,6 +4,7 @@ import {
   Search, 
   FolderUp, 
   Bot, 
+  Store,
   Settings,
   Sun,
   Moon,
@@ -18,6 +19,7 @@ const navItems = [
   { path: '/query', label: 'Query', icon: Search },
   { path: '/ingest', label: 'Ingest', icon: FolderUp },
   { path: '/agents', label: 'Agents', icon: Bot },
+  { path: '/publish', label: 'Publish', icon: Store },
 ];
 
 export function Sidebar() {

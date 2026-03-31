@@ -1,4 +1,5 @@
-import { MessageSquare, Search, FolderUp, Bot, ExternalLink, Keyboard } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { MessageSquare, Search, FolderUp, Bot, ExternalLink, Keyboard, Store } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui';
 
 export function HelpPage() {
@@ -12,6 +13,30 @@ export function HelpPage() {
           Learn how to use ContextForge effectively.
         </p>
       </div>
+
+      <Card className="mb-8 border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-950/20">
+        <CardContent className="pt-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-primary-100 dark:bg-primary-900">
+                <Store className="w-5 h-5 text-primary-600 dark:text-primary-400" aria-hidden />
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-gray-100">Publish &amp; app stores</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  VS Code Marketplace, Open VSX, Google Play, and App Store checklists — including how this differs from platforms like Base44.
+                </p>
+              </div>
+            </div>
+            <Link
+              to="/publish"
+              className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors text-sm font-medium shrink-0"
+            >
+              Open Publish hub
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Features */}
       <div className="grid gap-6 md:grid-cols-2 mb-8">

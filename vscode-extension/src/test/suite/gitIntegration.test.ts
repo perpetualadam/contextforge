@@ -16,8 +16,13 @@ suite('GitIntegration Test Suite', () => {
     const mockConfig = {
         gitEnabled: true,
         githubToken: '',
+        gitlabToken: '',
+        gitlabUrl: 'https://gitlab.com',
+        bitbucketToken: '',
+        bitbucketUsername: '',
         autoCommitMessages: true,
-        defaultBranch: 'main'
+        defaultBranch: 'main',
+        vcsProvider: 'github' as const,
     };
 
     suiteSetup(async () => {

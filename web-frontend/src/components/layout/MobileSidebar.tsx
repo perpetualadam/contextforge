@@ -7,7 +7,9 @@ import {
   Search, 
   FolderUp, 
   Bot, 
+  Store,
   Settings,
+  HelpCircle,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -20,7 +22,9 @@ const navItems = [
   { path: '/query', label: 'Query', icon: Search },
   { path: '/ingest', label: 'Ingest', icon: FolderUp },
   { path: '/agents', label: 'Agents', icon: Bot },
+  { path: '/publish', label: 'Publish', icon: Store },
   { path: '/settings', label: 'Settings', icon: Settings },
+  { path: '/help', label: 'Help', icon: HelpCircle },
 ];
 
 export function MobileSidebar() {

@@ -86,6 +86,12 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "contextforge.openPublishHub",
+        "title": "Open Publish & App Stores Hub",
+        "category": "ContextForge",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "contextforge.clearChatHistory",
         "title": "Clear Chat History",
         "category": "ContextForge",
@@ -250,6 +256,11 @@
           "type": "string",
           "default": "http://localhost:8082",
           "description": "ContextForge API Gateway URL"
+        },
+        "contextforge.webUiUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "Base URL of the ContextForge web UI (used for Publish hub, dashboards). Must match where you run the web-frontend (e.g. Docker port 3000 or Vite dev server)."
         },
         "contextforge.chatSessions": {
           "type": "array",
@@ -479,6 +490,10 @@
         },
         {
           "command": "contextforge.clearIndex",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.openPublishHub",
           "when": "contextforge.enabled"
         }
       ],

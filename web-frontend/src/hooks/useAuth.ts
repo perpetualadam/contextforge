@@ -3,7 +3,7 @@
  * Handles JWT authentication with HTTP-only cookies and CSRF protection
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useCallback } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -64,64 +64,6 @@ export const useAuth = () => {
   const { user, csrfToken, isAuthenticated, isLoading, error, setUser, setCSRFToken, setLoading, setError, logout: storeLogout } = useAuthStore();
 
   /**
-   * Login with username and password
-   */
-  const login = useCallback(async (username: string, password: string): Promise<boolean> => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', // Important: include cookies
-        body: JSON.stringify({ username, password })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
-        throw new Error(errorData.detail || 'Login failed');
-      }
-
-      const data: AuthTokens = await response.json();
-      
-      // CSRF token is set in cookie automatically by the server
-      // Get it from response header if available
-      const csrf = response.headers.get('X-CSRF-Token');
-      if (csrf) {
-        setCSRFToken(csrf);
-      }
-      
-      // Fetch user info
-      await fetchUserInfo();
-      
-      setLoading(false);
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Login failed';
-      setError(message);
-      setLoading(false);
-      return false;
-    }
-  }, [setLoading, setError, setCSRFToken]);
-
-  /**
-   * Logout and revoke tokens
-   */
-  const logout = useCallback(async () => {
-    try {
-      await fetch(`${API_BASE_URL}/auth/logout`, {
-        method: 'POST',
-        credentials: 'include'
-      });
-    } catch (err) {
-      console.error('Logout error:', err);
-    } finally {
-      storeLogout();
-    }
-  }, [storeLogout]);
-
-  /**
    * Fetch current user info
    */
   const fetchUserInfo = useCallback(async () => {
@@ -144,19 +86,75 @@ export const useAuth = () => {
   }, [setUser]);
 
   /**
+   * Login with username and password
+   */
+  const login = useCallback(async (username: string, password: string): Promise<boolean> => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // Important: include cookies
+        body: JSON.stringify({ username, password })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
+        throw new Error(errorData.detail || 'Login failed');
+      }
+
+      void (await response.json() as AuthTokens);
+
+      // CSRF token is set in cookie automatically by the server
+      // Get it from response header if available
+      const csrf = response.headers.get('X-CSRF-Token');
+      if (csrf) {
+        setCSRFToken(csrf);
+      }
+      
+      // Fetch user info
+      await fetchUserInfo();
+      
+      setLoading(false);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Login failed';
+      setError(message);
+      setLoading(false);
+      return false;
+    }
+  }, [setLoading, setError, setCSRFToken, fetchUserInfo]);
+
+  /**
+   * Logout and revoke tokens
+   */
+  const logout = useCallback(async () => {
+    try {
+      await fetch(`${API_BASE_URL}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch (err) {
+      console.error('Logout error:', err);
+    } finally {
+      storeLogout();
+    }
+  }, [storeLogout]);
+
+  /**
    * Make authenticated request with automatic token refresh
    */
   const makeAuthenticatedRequest = useCallback(async (
     url: string,
     options: RequestInit = {}
   ): Promise<Response> => {
-    const headers: HeadersInit = {
-      ...options.headers,
-    };
+    const headers = new Headers(options.headers ?? undefined);
 
     // Add CSRF token for state-changing requests
     if (csrfToken && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method || 'GET')) {
-      headers['X-CSRF-Token'] = csrfToken;
+      headers.set('X-CSRF-Token', csrfToken);
     }
 
     const response = await fetch(url, {
@@ -176,12 +174,12 @@ export const useAuth = () => {
     return response;
   }, [csrfToken, logout]);
 
-  // Check authentication status on mount
+  // Restore session when user not yet loaded from cookies / persist
   useEffect(() => {
     if (!user) {
-      fetchUserInfo();
+      void fetchUserInfo();
     }
-  }, []);
+  }, [user, fetchUserInfo]);
 
   return {
     user,

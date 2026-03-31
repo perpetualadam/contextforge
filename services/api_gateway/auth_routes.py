@@ -18,6 +18,7 @@ from services.security import (
     get_jwt_manager,
     get_csrf_protection,
     get_audit_logger,
+    get_current_user,
     User,
     UserRole,
     TokenPair,

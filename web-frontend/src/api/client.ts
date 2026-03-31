@@ -4,6 +4,7 @@
  */
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_KEY_STORAGE = 'contextforge_api_key';
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
 
@@ -210,10 +211,38 @@ class ApiClient {
   private isOnline: boolean = true;
   private onlineListeners: Set<(online: boolean) => void> = new Set();
   private csrfToken: string | null = null;
+  private apiKey: string | null = null;
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        this.apiKey = localStorage.getItem(API_KEY_STORAGE);
+      }
+    } catch {
+      /* ignore */
+    }
     this.startHealthCheck();
+  }
+
+  /** Optional gateway API key (Authorization: Bearer), persisted in localStorage. */
+  getApiKey(): string | null {
+    return this.apiKey;
+  }
+
+  setApiKey(key: string | null): void {
+    this.apiKey = key?.trim() ? key.trim() : null;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        if (this.apiKey) {
+          localStorage.setItem(API_KEY_STORAGE, this.apiKey);
+        } else {
+          localStorage.removeItem(API_KEY_STORAGE);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
@@ -259,10 +288,14 @@ class ApiClient {
     setInterval(check, 30000); // Check every 30 seconds
   }
 
-  private getHeaders(method: string = 'GET'): HeadersInit {
-    const headers: HeadersInit = {
+  private getHeaders(method: string = 'GET'): Record<string, string> {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
 
     // Add CSRF token for state-changing requests
     if (this.csrfToken && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
@@ -400,7 +433,11 @@ class ApiClient {
     const formData = new FormData();
     formData.append('file', file);
 
-    const headers: HeadersInit = {};
+    const headers: Record<string, string> = {};
+
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
 
     // Add CSRF token for file upload
     if (this.csrfToken) {
