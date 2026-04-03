@@ -1,0 +1,21 @@
+{
+  "name": "ci_small_repo",
+  "description": "Matches examples/small-repo after docker-compose ingest in CI.",
+  "queries": [
+    {
+      "q": "Where is the API token or authentication configured?",
+      "relevant_file_substrings": ["api", "auth", "config", "settings"],
+      "task_scope": "explain"
+    },
+    {
+      "q": "database connection pool",
+      "relevant_file_substrings": ["database", "db", "python"],
+      "task_scope": "explain"
+    },
+    {
+      "q": "javascript utility helpers",
+      "relevant_file_substrings": ["utils", "javascript", "js"],
+      "task_scope": "general"
+    }
+  ]
+}

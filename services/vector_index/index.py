@@ -830,9 +830,16 @@ class PerformanceMetrics:
         self.last_query_time = None
 
 
-RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+# Default: BGE reranker (strong on retrieval); override with e.g. ms-marco for faster CPU.
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "false").lower() == "true"
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "10"))
+RERANK_LOG_LIFT = os.getenv("RERANK_LOG_LIFT", "true").lower() in ("true", "1", "yes")
+
+COARSE_ROUTING_ENABLED = os.getenv("COARSE_ROUTING_ENABLED", "false").lower() == "true"
+COARSE_LEXICAL_TOP = int(os.getenv("COARSE_LEXICAL_TOP", "80"))
+# Cap dense neighbor count for huge indexes (tiered retrieval scope)
+DENSE_CANDIDATE_CAP = int(os.getenv("DENSE_CANDIDATE_CAP", "500"))
 
 
 class Reranker:
@@ -1174,6 +1181,12 @@ class VectorIndex:
 
         return "text"
 
+    @staticmethod
+    def _chunk_file_path(result_row: Dict[str, Any]) -> str:
+        meta = result_row.get("metadata") or {}
+        inner = meta.get("meta") or {}
+        return inner.get("file_path", "") or ""
+
     def search(self, query: str, top_k: int = 10,
                enable_hybrid: Optional[bool] = None,
                enable_reranking: bool = False,
@@ -1181,26 +1194,24 @@ class VectorIndex:
                expand_graph: bool = False,
                graph_depth: int = 1,
                graph_edge_types: Optional[List[str]] = None,
-               task_scope: Optional[str] = None) -> Dict[str, Any]:
+               task_scope: Optional[str] = None,
+               coarse_routing: Optional[bool] = None,
+               filter_file_paths: Optional[List[str]] = None,
+               git_changed_files: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Search the index for similar content with hybrid retrieval.
 
         Args:
-            query: Search query
-            top_k: Number of results to return
-            enable_hybrid: Override hybrid search setting
-            enable_reranking: Enable LLM-based re-ranking
-            recency_boost: Override recency boost setting
-            expand_graph: Whether to expand results via code graph
-            graph_depth: Depth of graph traversal
-            graph_edge_types: Edge types to follow during expansion
-            task_scope: Task scope key for task-scoped retrieval
+            coarse_routing: If True, restrict fused results to lexical top file paths (scale path).
+            filter_file_paths: Optional allow-list of file paths (exact match).
+            git_changed_files: Boost scores for chunks in these paths (freshness).
         """
-        # Start timing
         start_time = time.time()
+        stages_ms: Dict[str, float] = {}
+        lexical_results: List[Dict[str, Any]] = []
+        rerank_rank_delta: Optional[float] = None
 
         try:
-            # Apply task scope overrides if provided
             scope_config = None
             if task_scope:
                 scope_config = self._resolve_task_scope(
@@ -1214,30 +1225,58 @@ class VectorIndex:
             use_hybrid = enable_hybrid if enable_hybrid is not None else self.enable_hybrid
             use_recency = recency_boost if recency_boost is not None else RECENCY_BOOST_ENABLED
 
-            # Generate query embedding
+            t0 = time.time()
             query_embedding = self.embedding_generator.encode_single(query)
+            stages_ms["embed_ms"] = (time.time() - t0) * 1000
 
-            # Dense vector search
-            dense_results = self.index.search(query_embedding, top_k * 2)  # Get more for fusion
+            td0 = time.time()
+            dense_k = min(top_k * 2, DENSE_CANDIDATE_CAP)
+            dense_results = self.index.search(query_embedding, dense_k)
+            stages_ms["dense_ms"] = (time.time() - td0) * 1000
 
-            # Hybrid search: combine dense + lexical
             if use_hybrid and self.lexical_index:
-                lexical_results = self.lexical_index.search(query, top_k * 2)
+                tl0 = time.time()
+                lex_k = min(top_k * 2, DENSE_CANDIDATE_CAP)
+                lexical_results = self.lexical_index.search(query, lex_k)
+                stages_ms["lexical_ms"] = (time.time() - tl0) * 1000
+                tf0 = time.time()
                 combined_results = self._fuse_results(dense_results, lexical_results, top_k * 2)
+                stages_ms["fusion_ms"] = (time.time() - tf0) * 1000
             else:
                 combined_results = dense_results
+                stages_ms["lexical_ms"] = 0.0
+                stages_ms["fusion_ms"] = 0.0
 
-            # Apply recency boost
+            do_coarse = coarse_routing if coarse_routing is not None else COARSE_ROUTING_ENABLED
+            if do_coarse and lexical_results:
+                allowed: set = set()
+                for lr in lexical_results[:COARSE_LEXICAL_TOP]:
+                    m = lr.get("metadata") or {}
+                    inner = m.get("meta") or {}
+                    fp = inner.get("file_path", "")
+                    if fp:
+                        allowed.add(fp)
+                if len(allowed) >= 3:
+                    backup = list(combined_results)
+                    filtered = [
+                        r for r in combined_results
+                        if self._chunk_file_path(r) in allowed
+                    ]
+                    if len(filtered) >= max(3, top_k // 3):
+                        combined_results = filtered
+
+            if filter_file_paths:
+                allow = set(filter_file_paths)
+                filtered = [r for r in combined_results if self._chunk_file_path(r) in allow]
+                if filtered:
+                    combined_results = filtered
+
             if use_recency:
                 combined_results = self._apply_recency_boost(combined_results)
 
-            # Re-sort by final score
             combined_results.sort(key=lambda x: x.get("final_score", x.get("score", 0)), reverse=True)
-
-            # Take top-k
             final_results = combined_results[:top_k]
 
-            # Format results, skip tombstoned entries
             formatted_results = []
             for i, result in enumerate(final_results):
                 if result.get("metadata", {}).get("_deleted"):
@@ -1256,25 +1295,45 @@ class VectorIndex:
                 }
                 formatted_results.append(formatted_result)
 
-            # Apply task-scope boosting (chunk type + content type)
             if scope_config:
                 formatted_results = self._apply_scope_boost(formatted_results, scope_config)
                 formatted_results.sort(key=lambda x: x["score"], reverse=True)
 
-            # Cross-encoder re-ranking
+            if git_changed_files:
+                ch = set(git_changed_files)
+                for fr in formatted_results:
+                    fp = (fr.get("meta") or {}).get("file_path", "")
+                    if fp and fp in ch:
+                        fr["score"] = fr.get("score", 0) * 1.25
+                formatted_results.sort(key=lambda x: x["score"], reverse=True)
+
             should_rerank = enable_reranking or RERANK_ENABLED
             if should_rerank and formatted_results:
                 try:
                     if self._reranker is None:
                         self._reranker = Reranker()
                     rerank_k = RERANK_TOP_K if RERANK_TOP_K else top_k
+                    pre_ids = [r.get("chunk_id") for r in formatted_results[:5]]
+                    tr0 = time.time()
                     formatted_results = self._reranker.rerank(
                         query, formatted_results, top_k=rerank_k
                     )
+                    stages_ms["rerank_ms"] = (time.time() - tr0) * 1000
+                    if RERANK_LOG_LIFT and pre_ids:
+                        pos_before = {cid: i for i, cid in enumerate(pre_ids) if cid}
+                        post_ids = [r.get("chunk_id") for r in formatted_results[:5]]
+                        deltas = []
+                        for i, cid in enumerate(post_ids[:3]):
+                            if cid and cid in pos_before:
+                                deltas.append(pos_before[cid] - i)
+                        if deltas:
+                            rerank_rank_delta = sum(deltas) / len(deltas)
                 except Exception as rerank_err:
                     logger.warning(f"Re-ranking failed, using original order: {rerank_err}")
+                    stages_ms["rerank_ms"] = 0.0
+            else:
+                stages_ms["rerank_ms"] = 0.0
 
-            # Graph expansion: append related chunks
             if expand_graph and graph_depth > 0 and self.code_graph:
                 metadata_lookup = None
                 try:
@@ -1288,12 +1347,12 @@ class VectorIndex:
                     metadata_lookup=metadata_lookup,
                 )
 
-            # Record performance metrics
             query_time = time.time() - start_time
             self.metrics.record_query(query_time)
 
             logger.info(f"Search completed in {query_time:.3f}s, returned {len(formatted_results)} results")
 
+            total_ms = query_time * 1000.0
             return {
                 "query": query,
                 "results": formatted_results,
@@ -1305,7 +1364,12 @@ class VectorIndex:
                 "task_scope": task_scope,
                 "performance": {
                     "query_time_seconds": query_time
-                }
+                },
+                "instrumentation": {
+                    "stages_ms": stages_ms,
+                    "total_ms": total_ms,
+                    "rerank_rank_delta": rerank_rank_delta,
+                },
             }
 
         except Exception as e:

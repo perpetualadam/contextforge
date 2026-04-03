@@ -40,8 +40,9 @@ services:
     build:
       context: .
       dockerfile: ./services/vector_index/Dockerfile
+    # Host port (left) is configurable when 8001 is already in use — see VECTOR_INDEX_HOST_PORT in .env.example
     ports:
-      - "8001:8001"
+      - "${VECTOR_INDEX_HOST_PORT:-8001}:8001"
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Enhanced Embedding Configuration

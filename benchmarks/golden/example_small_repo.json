@@ -1,0 +1,16 @@
+{
+  "name": "example_small_repo",
+  "description": "Template golden set — replace with your repo paths after indexing.",
+  "queries": [
+    {
+      "q": "where is the main entry point",
+      "relevant_file_substrings": ["main", "app", "__main__"],
+      "task_scope": "explain"
+    },
+    {
+      "q": "error handling",
+      "relevant_file_substrings": ["error", "exception", "handler"],
+      "task_scope": "find_bugs"
+    }
+  ]
+}

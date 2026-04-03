@@ -604,7 +604,20 @@ class LLMClient:
     def __init__(self, priority_env: str = "LLM_PRIORITY"):
         self.adapters = {}
         self.priority = self._parse_priority(os.getenv(priority_env, "ollama"))
+        self._apply_cloud_policy()
         self._initialize_adapters()
+
+    def _apply_cloud_policy(self) -> None:
+        """POLICY_NO_CLOUD_LLM: keep only local adapters (ollama, lm_studio)."""
+        if os.getenv("POLICY_NO_CLOUD_LLM", "").lower() not in ("true", "1", "yes"):
+            return
+        local_only = {"ollama", "lm_studio"}
+        filtered = [p for p in self.priority if p in local_only]
+        if not filtered:
+            logger.warning("POLICY_NO_CLOUD_LLM removed all providers; defaulting to ollama")
+            self.priority = ["ollama"]
+        else:
+            self.priority = filtered
 
     def _parse_priority(self, priority_str: str) -> List[str]:
         """Parse comma-separated priority list."""

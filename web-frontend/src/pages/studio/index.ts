@@ -1,0 +1,11 @@
+export { StudioPage } from './StudioPage';
+export { ComposerStudioPage } from './ComposerStudioPage';
+export { AgentExecuteStudioPage } from './AgentExecuteStudioPage';
+export { CodeToolsPage } from './CodeToolsPage';
+export { DocsStudioPage } from './DocsStudioPage';
+export { SymbolsStudioPage } from './SymbolsStudioPage';
+export { OrchestrateStudioPage } from './OrchestrateStudioPage';
+export { PromptStudioPage } from './PromptStudioPage';
+export { TerminalStudioPage } from './TerminalStudioPage';
+export { VectorSearchPage } from './VectorSearchPage';
+export { GitStudioPage } from './GitStudioPage';

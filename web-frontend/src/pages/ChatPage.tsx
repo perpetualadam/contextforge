@@ -1,17 +1,31 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Plus, Trash2, User, Bot } from 'lucide-react';
+import { Send, Plus, Trash2, User, Bot, Paperclip, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { clsx } from 'clsx';
 import { Button, LoadingDots, CodeBlock } from '../components/ui';
-import { useChat, useConnection } from '../store';
-import apiClient, { ChatMessage } from '../api/client';
+import { useChat, useConnection, useWorkspace, buildEditorContext, clampTokens } from '../store';
+import apiClient, { ChatMessage, Attachment } from '../api/client';
 
 export function ChatPage() {
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { isOnline } = useConnection();
-  
+  const {
+    projectRules,
+    privacyMode,
+    chatMaxTokens,
+    chatWebSearch,
+    llmProvider,
+    contextCurrentFile,
+    contextSelection,
+    contextCursorLine,
+    contextOpenFiles,
+    contextGitDiff,
+  } = useWorkspace();
+
   const {
     conversations,
     activeConversationId,
@@ -40,9 +54,9 @@ export function ChatPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if ((!input.trim() && attachments.length === 0) || isLoading) return;
 
-    const message = input.trim();
+    const message = input.trim() || (attachments.length ? 'See attached files.' : '');
     setInput('');
     setError(null);
 
@@ -62,11 +76,28 @@ export function ChatPage() {
 
     setLoading(true);
     try {
+      const editor_context = buildEditorContext({
+        contextCurrentFile,
+        contextSelection,
+        contextCursorLine,
+        contextOpenFiles,
+        contextGitDiff,
+      });
+
       const response = await apiClient.chat({
         messages: messages.map(m => ({ role: m.role, content: m.content })),
         conversation_id: conversationId,
         enable_context: true,
+        max_tokens: clampTokens(chatMaxTokens),
+        enable_web_search: chatWebSearch,
+        ...(llmProvider.trim() ? { provider: llmProvider.trim() } : {}),
+        ...(editor_context ? { editor_context } : {}),
+        ...(attachments.length ? { attachments } : {}),
+        ...(projectRules.trim() ? { project_rules: projectRules.trim() } : {}),
+        privacy_mode: privacyMode,
       });
+
+      setAttachments([]);
 
       addMessage(conversationId, {
         role: 'assistant',
@@ -82,6 +113,27 @@ export function ChatPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    setError(null);
+    for (const file of Array.from(files)) {
+      try {
+        const up = await apiClient.uploadFile(file);
+        const att: Attachment = {
+          name: up.name,
+          type: up.type,
+          data: up.type.startsWith('image/') ? up.data : undefined,
+          extracted_text: up.extractedText || undefined,
+        };
+        setAttachments((prev) => [...prev, att]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Upload failed');
+      }
+    }
+    e.target.value = '';
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -173,6 +225,34 @@ export function ChatPage() {
             </div>
           )}
           
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFilePick}
+            aria-label="Attach files"
+          />
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attachments.map((a, i) => (
+                <span
+                  key={`${a.name}-${i}`}
+                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                >
+                  {a.name}
+                  <button
+                    type="button"
+                    className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+                    onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                    aria-label={`Remove ${a.name}`}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="flex gap-2">
             <textarea
               ref={inputRef}
@@ -186,8 +266,17 @@ export function ChatPage() {
               aria-label="Chat message input"
             />
             <Button
+              type="button"
+              variant="secondary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading || !isOnline}
+              aria-label="Attach file"
+            >
+              <Paperclip className="w-5 h-5" />
+            </Button>
+            <Button
               type="submit"
-              disabled={!input.trim() || isLoading}
+              disabled={(!input.trim() && attachments.length === 0) || isLoading}
               aria-label="Send message"
             >
               <Send className="w-5 h-5" />

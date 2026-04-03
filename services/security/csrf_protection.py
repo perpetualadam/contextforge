@@ -10,15 +10,23 @@ import os
 import secrets
 import hmac
 import hashlib
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+_logger = logging.getLogger(__name__)
 
-# CSRF Configuration
-CSRF_SECRET_KEY = os.getenv("CSRF_SECRET_KEY", secrets.token_urlsafe(32))
+# CSRF Configuration — set CSRF_SECRET_KEY in production so tokens survive restarts
+CSRF_SECRET_KEY = os.getenv("CSRF_SECRET_KEY")
+if not CSRF_SECRET_KEY:
+    CSRF_SECRET_KEY = secrets.token_urlsafe(32)
+    _logger.warning(
+        "CSRF_SECRET_KEY is not set; using an ephemeral key (CSRF cookies invalid after restart). "
+        "Set CSRF_SECRET_KEY in production."
+    )
 CSRF_TOKEN_EXPIRE_HOURS = int(os.getenv("CSRF_TOKEN_EXPIRE_HOURS", "24"))
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"

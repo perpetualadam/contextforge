@@ -168,3 +168,11 @@ export const useQuery = create<QueryState>((set) => ({
   setError: (error) => set({ error }),
 }));
 
+export {
+  useWorkspace,
+  buildEditorContext,
+  effectiveRepoPath,
+  clampTokens,
+  MAX_TOKENS_UI_CAP,
+} from './workspace';
+

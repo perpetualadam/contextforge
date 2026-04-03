@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { 
   Menu, 
   X,
@@ -8,6 +8,7 @@ import {
   FolderUp, 
   Bot, 
   Store,
+  LayoutDashboard,
   Settings,
   HelpCircle,
   Sun,
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/query', label: 'Query', icon: Search },
   { path: '/ingest', label: 'Ingest', icon: FolderUp },
   { path: '/agents', label: 'Agents', icon: Bot },
+  { path: '/studio', label: 'Studio', icon: LayoutDashboard },
   { path: '/publish', label: 'Publish', icon: Store },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/help', label: 'Help', icon: HelpCircle },
@@ -29,6 +31,7 @@ const navItems = [
 
 export function MobileSidebar() {
   const [isOpen, setIsOpen] = useState(false);
+  const { pathname } = useLocation();
   const { isDark, toggle } = useTheme();
   const { isOnline } = useConnection();
 
@@ -106,7 +109,7 @@ export function MobileSidebar() {
               onClick={closeSidebar}
               className={({ isActive }) => clsx(
                 'flex items-center gap-3 px-3 py-3 rounded-lg transition-colors',
-                isActive 
+                isActive || (item.path === '/studio' && pathname.startsWith('/studio'))
                   ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
                   : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
               )}

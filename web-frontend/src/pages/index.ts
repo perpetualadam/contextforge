@@ -5,4 +5,17 @@ export { AgentsPage } from './AgentsPage';
 export { SettingsPage } from './SettingsPage';
 export { HelpPage } from './HelpPage';
 export { PublishPage } from './PublishPage';
+export {
+  StudioPage,
+  ComposerStudioPage,
+  AgentExecuteStudioPage,
+  CodeToolsPage,
+  DocsStudioPage,
+  SymbolsStudioPage,
+  OrchestrateStudioPage,
+  PromptStudioPage,
+  TerminalStudioPage,
+  VectorSearchPage,
+  GitStudioPage,
+} from './studio';
 

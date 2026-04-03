@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { MessageSquare, Search, FolderUp, Bot, ExternalLink, Keyboard, Store } from 'lucide-react';
+import { MessageSquare, Search, FolderUp, Bot, ExternalLink, Keyboard, Store, LayoutDashboard } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui';
 
 export function HelpPage() {
@@ -60,7 +60,26 @@ export function HelpPage() {
           title="Agents"
           description="Monitor the status of local and remote agents that power ContextForge's capabilities."
         />
+        <FeatureCard
+          icon={LayoutDashboard}
+          title="Studio"
+          description="Composer, agent execution, code tools, docs, symbols, orchestration, prompts, terminal, vector search, and Git (server repo) — gateway APIs aligned with the extension where the backend allows."
+        />
       </div>
+
+      <Card className="mb-8">
+        <CardHeader>
+          <CardTitle>Browser app and VS Code add-on</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
+            You can do almost everything from this website: chat, ask questions, attach files, tune tokens and context in
+            Settings, and use Studio for composer, agents, code tools, and more. The VS Code add-on adds extra comfort for
+            things that live right on your computer (like one-click Git). Put your repo path in Settings (or override it
+            on each Studio page) so the server talks about the same folder you indexed.
+          </p>
+        </CardContent>
+      </Card>
 
       {/* Keyboard Shortcuts */}
       <Card className="mb-8">

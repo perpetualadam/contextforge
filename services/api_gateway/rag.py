@@ -16,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 
 import os
 import logging
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -24,6 +25,24 @@ from llm_client import LLMClient
 from search_adapter import SearchAdapter
 
 logger = logging.getLogger(__name__)
+
+try:
+    from services.query_planner import plan_queries
+except ImportError:
+    def plan_queries(q: str, task_scope=None):
+        return [q.strip()] if q.strip() else []
+
+try:
+    from services.retrieval_metrics import get_retrieval_metrics
+except ImportError:
+    def get_retrieval_metrics():
+        return None
+
+try:
+    from services.workspace_memory import load_memories
+except ImportError:
+    def load_memories(_):
+        return ""
 
 # Try to use unified config, fallback to env vars
 try:
@@ -85,6 +104,82 @@ class RAGPipeline:
         self.vector_index_url = VECTOR_INDEX_URL
         self._cache = _retrieval_cache  # Use global cache if available
 
+    @staticmethod
+    def _merge_subquery_results(
+        result_lists: List[List[Dict[str, Any]]],
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """Dedupe by chunk_id / file+line; keep highest score."""
+        best_score: Dict[str, float] = {}
+        by_key: Dict[str, Dict[str, Any]] = {}
+        for rlist in result_lists:
+            for r in rlist:
+                meta = r.get("meta") or {}
+                cid = r.get("chunk_id") or ""
+                if not cid:
+                    cid = f"{meta.get('file_path', '')}:{meta.get('start_line', '')}"
+                sc = float(r.get("score", 0))
+                if cid not in best_score or sc > best_score[cid]:
+                    best_score[cid] = sc
+                    by_key[cid] = r
+        merged = sorted(by_key.values(), key=lambda x: x.get("score", 0), reverse=True)
+        return merged[:top_k]
+
+    def _vector_search_http(
+        self,
+        q: str,
+        top_k: int,
+        task_scope: Optional[str],
+        expand_graph: bool,
+        coarse_routing: Optional[bool],
+        filter_file_paths: Optional[List[str]],
+        git_changed_files: Optional[List[str]],
+        enable_reranking: Optional[bool],
+    ) -> List[Dict[str, Any]]:
+        ts = task_scope or "general"
+        payload: Dict[str, Any] = {
+            "query": q,
+            "top_k": top_k,
+            "task_scope": ts,
+            "expand_graph": expand_graph,
+            "graph_depth": 1,
+            "graph_edge_types": [],
+            "enable_reranking": (
+                enable_reranking
+                if enable_reranking is not None
+                else os.getenv("RERANK_ENABLED", "false").lower() == "true"
+            ),
+        }
+        if coarse_routing is not None:
+            payload["coarse_routing"] = coarse_routing
+        if filter_file_paths:
+            payload["filter_file_paths"] = filter_file_paths
+        if git_changed_files:
+            payload["git_changed_files"] = git_changed_files
+
+        response = requests.post(
+            f"{self.vector_index_url}/search",
+            json=payload,
+            timeout=int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60")),
+        )
+        response.raise_for_status()
+        data = response.json()
+        inst = data.get("instrumentation") or {}
+        rm = get_retrieval_metrics()
+        if rm and inst:
+            stages = inst.get("stages_ms") or {}
+            rm.record_vector_search(
+                float(inst.get("total_ms", 0)),
+                stages={
+                    "dense_ms": stages.get("dense_ms"),
+                    "lexical_ms": stages.get("lexical_ms"),
+                    "fusion_ms": stages.get("fusion_ms"),
+                    "rerank_ms": stages.get("rerank_ms"),
+                },
+                rerank_rank_delta=inst.get("rerank_rank_delta"),
+            )
+        return data.get("results", [])
+
     def retrieve_contexts(
         self,
         query: str,
@@ -93,6 +188,9 @@ class RAGPipeline:
         task_scope: Optional[str] = None,
         use_hierarchical: bool = False,
         editor_context: Optional[Dict[str, Any]] = None,
+        coarse_routing: Optional[bool] = None,
+        filter_file_paths: Optional[List[str]] = None,
+        enable_reranking: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve relevant contexts from vector index with optional caching.
 
@@ -107,41 +205,77 @@ class RAGPipeline:
                 ``current_file``, ``current_selection``, ``open_files``,
                 ``cursor_line``, ``recent_files``, ``git_diff``.
         """
-        # Check cache first
+        subqueries = plan_queries(query, task_scope)
+        if use_hierarchical:
+            cache_key = query
+        else:
+            cache_key = "|".join(subqueries) if len(subqueries) > 1 else query
+        git_changed = (editor_context or {}).get("changed_files") or (editor_context or {}).get("git_changed_files")
+
         if use_cache and self._cache:
-            cached = self._cache.get_results(query, top_k=top_k)
+            cached = self._cache.get_results(
+                cache_key,
+                top_k=top_k,
+                task_scope=task_scope or "",
+                hierarchical=use_hierarchical,
+                coarse=str(coarse_routing),
+            )
             if cached is not None:
                 logger.debug(f"Cache hit for query: {query[:50]}...")
                 return cached
 
+        t0 = time.time()
         try:
             results: List[Dict[str, Any]] = []
 
             if use_hierarchical:
                 results = self._retrieve_hierarchical(query, top_k, task_scope)
-            else:
-                search_payload: Dict[str, Any] = {"query": query, "top_k": top_k}
-                if task_scope and task_scope != "general":
-                    search_payload["task_scope"] = task_scope
-                    search_payload["expand_graph"] = True
-
-                response = requests.post(
-                    f"{self.vector_index_url}/search",
-                    json=search_payload,
-                    timeout=int(os.getenv("VECTOR_SEARCH_TIMEOUT", "60"))
+            elif len(subqueries) <= 1:
+                expand_graph = bool(task_scope and task_scope != "general")
+                results = self._vector_search_http(
+                    subqueries[0],
+                    top_k,
+                    task_scope,
+                    expand_graph=expand_graph,
+                    coarse_routing=coarse_routing,
+                    filter_file_paths=filter_file_paths,
+                    git_changed_files=git_changed,
+                    enable_reranking=enable_reranking,
                 )
-                response.raise_for_status()
+            else:
+                lists: List[List[Dict[str, Any]]] = []
+                for sq in subqueries:
+                    expand_graph = bool(task_scope and task_scope != "general")
+                    lists.append(
+                        self._vector_search_http(
+                            sq,
+                            max(top_k, 15),
+                            task_scope,
+                            expand_graph=expand_graph,
+                            coarse_routing=coarse_routing,
+                            filter_file_paths=filter_file_paths,
+                            git_changed_files=git_changed,
+                            enable_reranking=enable_reranking,
+                        )
+                    )
+                results = self._merge_subquery_results(lists, top_k)
 
-                data = response.json()
-                results = data.get("results", [])
-
-            # Boost / inject editor-context results
             if editor_context:
                 results = self._apply_editor_context(results, editor_context)
 
-            # Cache the results
             if use_cache and self._cache and results:
-                self._cache.set_results(query, results, top_k=top_k)
+                self._cache.set_results(
+                    cache_key,
+                    results,
+                    top_k=top_k,
+                    task_scope=task_scope or "",
+                    hierarchical=use_hierarchical,
+                    coarse=str(coarse_routing),
+                )
+
+            rm = get_retrieval_metrics()
+            if rm:
+                rm.record_rag_retrieve((time.time() - t0) * 1000.0)
 
             return results
 
@@ -180,6 +314,7 @@ class RAGPipeline:
         open_files = set(editor_context.get("open_files") or [])
         selection = editor_context.get("current_selection")
         git_diff = editor_context.get("git_diff")
+        changed_files = set(editor_context.get("changed_files") or editor_context.get("git_changed_files") or [])
 
         # Boost results whose file matches current file or open tabs
         for r in results:
@@ -188,6 +323,8 @@ class RAGPipeline:
                 r["score"] = r.get("score", 0) * 1.5
             elif open_files and any(file_path and of.endswith(file_path) for of in open_files):
                 r["score"] = r.get("score", 0) * 1.2
+            if changed_files and file_path and file_path in changed_files:
+                r["score"] = r.get("score", 0) * 1.15
 
         # Prepend selection as highest-priority context
         if selection and selection.strip():
@@ -206,6 +343,27 @@ class RAGPipeline:
                 "score": 0.5,
                 "meta": {"source": "git_diff"},
                 "content_type": "diff",
+                "source": "editor",
+            })
+
+        diags = editor_context.get("diagnostic_messages") or []
+        if diags:
+            block = "\n".join(str(d) for d in diags[:50])
+            results.append({
+                "text": f"Editor diagnostics:\n{block[:8000]}",
+                "score": 0.55,
+                "meta": {"source": "editor_diagnostics"},
+                "content_type": "diagnostic",
+                "source": "editor",
+            })
+
+        term_err = editor_context.get("last_terminal_error")
+        if term_err and str(term_err).strip():
+            results.append({
+                "text": f"Last terminal error:\n{str(term_err)[:8000]}",
+                "score": 0.6,
+                "meta": {"source": "terminal_error"},
+                "content_type": "terminal",
                 "source": "editor",
             })
 
@@ -313,13 +471,15 @@ class RAGPipeline:
         return "\n\n".join(formatted)
     
     def compose_prompt(self, question: str, contexts: List[Dict[str, Any]], 
-                      web_results: List[Dict[str, Any]], backend: str = "unknown") -> str:
+                      web_results: List[Dict[str, Any]], backend: str = "unknown",
+                      system_prompt_override: Optional[str] = None) -> str:
         """Compose the final prompt for the LLM."""
+        sys_p = system_prompt_override or SYSTEM_PROMPT
         contexts_text = self.format_contexts(contexts)
         web_text = self.format_web_results(web_results)
         
         return RAG_TEMPLATE.format(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=sys_p,
             question=question,
             contexts=contexts_text,
             web_results=web_text,
@@ -332,7 +492,10 @@ class RAGPipeline:
                        max_tokens: int = 512,
                        task_scope: Optional[str] = None,
                        editor_context: Optional[Dict[str, Any]] = None,
-                       use_hierarchical: bool = False) -> Dict[str, Any]:
+                       use_hierarchical: bool = False,
+                       workspace_id: Optional[str] = None,
+                       coarse_routing: Optional[bool] = None,
+                       top_k: Optional[int] = None) -> Dict[str, Any]:
         """Main RAG pipeline: retrieve, search, and generate answer.
 
         Args:
@@ -345,27 +508,40 @@ class RAGPipeline:
             use_hierarchical: Use HierarchicalRetriever.
         """
         start_time = datetime.now()
+        k = top_k if top_k is not None else VECTOR_TOP_K
 
         # Step 1: Retrieve contexts from vector index
         logger.info(f"Retrieving contexts for: {question}")
         contexts = self.retrieve_contexts(
             question,
+            top_k=k,
             task_scope=task_scope,
             use_hierarchical=use_hierarchical,
             editor_context=editor_context,
+            coarse_routing=coarse_routing,
         )
-        
-        # Step 2: Optionally search the web
+
+        # Step 2: Optionally search the web (org policy can disable)
         web_results = []
-        if (enable_web_search is True) or (enable_web_search is None and ENABLE_WEB_SEARCH):
+        policy_no_web = os.getenv("POLICY_NO_WEB_SEARCH", "").lower() in ("true", "1", "yes")
+        web_allowed = not policy_no_web and (
+            (enable_web_search is True) or (enable_web_search is None and ENABLE_WEB_SEARCH)
+        )
+        if web_allowed:
             logger.info("Searching web for additional context")
             web_results = self.search_web(question)
         
         # Step 3: Budget contexts to fit model window (token-aware)
         contexts = self._budget_contexts(contexts)
+        retrieval_diag = self._retrieval_diagnostics(contexts)
+
+        mem_block = load_memories(workspace_id) if workspace_id else ""
+        sys_override = SYSTEM_PROMPT
+        if mem_block:
+            sys_override = SYSTEM_PROMPT + "\n\n## Project memories (explicit, user-provided)\n" + mem_block
         
         # Step 4: Compose prompt
-        prompt = self.compose_prompt(question, contexts, web_results)
+        prompt = self.compose_prompt(question, contexts, web_results, system_prompt_override=sys_override)
         
         # Step 5: Generate answer
         logger.info("Generating answer with LLM")
@@ -387,7 +563,9 @@ class RAGPipeline:
                     "total_latency_ms": total_latency,
                     "num_contexts": len(contexts),
                     "num_web_results": len(web_results),
-                    "timestamp": start_time.isoformat()
+                    "timestamp": start_time.isoformat(),
+                    "retrieval_diagnostics": retrieval_diag,
+                    "policy_no_web_search": policy_no_web,
                 }
             }
             
@@ -406,9 +584,49 @@ class RAGPipeline:
                     "total_latency_ms": int((datetime.now() - start_time).total_seconds() * 1000),
                     "num_contexts": len(contexts),
                     "num_web_results": len(web_results),
-                    "timestamp": start_time.isoformat()
+                    "timestamp": start_time.isoformat(),
+                    "retrieval_diagnostics": retrieval_diag,
+                    "policy_no_web_search": policy_no_web,
                 }
             }
+    
+    def _retrieval_diagnostics(self, contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Hints when no chunks survived budgeting (failure UX)."""
+        if contexts:
+            return {"empty": False}
+        vec_ok = False
+        vec_stats: Dict[str, Any] = {}
+        try:
+            r = requests.get(f"{self.vector_index_url}/health", timeout=3)
+            vec_ok = r.status_code == 200
+            if vec_ok:
+                vec_stats = r.json().get("stats") or {}
+        except Exception:
+            pass
+        hints: List[str] = []
+        if not vec_ok:
+            hints.append(
+                "Cannot reach the vector index — check VECTOR_INDEX_URL and that the vector-index container is running."
+            )
+        else:
+            hints.append(
+                "No indexed chunks matched this query after retrieval — ingest your workspace or try a more specific question."
+            )
+            hints.append("If you already ingested, the index may be stale: re-run ingestion after large refactors.")
+        total_vectors = vec_stats.get("total_vectors") or vec_stats.get("total_docs")
+        return {
+            "empty": True,
+            "vector_index_reachable": vec_ok,
+            "approx_index_size": total_vectors,
+            "hints": hints,
+            "suggested_actions": [
+                {
+                    "action": "ingest",
+                    "label": "Ingest workspace",
+                    "hint": "POST /ingest with your repo path",
+                }
+            ],
+        }
     
     def health_check(self) -> Dict[str, Any]:
         """Check health of all RAG components."""

@@ -1,6 +1,25 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/layout';
-import { ChatPage, QueryPage, IngestPage, AgentsPage, SettingsPage, HelpPage, PublishPage } from './pages';
+import {
+  ChatPage,
+  QueryPage,
+  IngestPage,
+  AgentsPage,
+  SettingsPage,
+  HelpPage,
+  PublishPage,
+  StudioPage,
+  ComposerStudioPage,
+  AgentExecuteStudioPage,
+  CodeToolsPage,
+  DocsStudioPage,
+  SymbolsStudioPage,
+  OrchestrateStudioPage,
+  PromptStudioPage,
+  TerminalStudioPage,
+  VectorSearchPage,
+  GitStudioPage,
+} from './pages';
 
 function App() {
   return (
@@ -15,6 +34,17 @@ function App() {
         <Route path="/ingest" element={<IngestPage />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/publish" element={<PublishPage />} />
+        <Route path="/studio" element={<StudioPage />} />
+        <Route path="/studio/composer" element={<ComposerStudioPage />} />
+        <Route path="/studio/agent" element={<AgentExecuteStudioPage />} />
+        <Route path="/studio/code" element={<CodeToolsPage />} />
+        <Route path="/studio/docs" element={<DocsStudioPage />} />
+        <Route path="/studio/symbols" element={<SymbolsStudioPage />} />
+        <Route path="/studio/orchestrate" element={<OrchestrateStudioPage />} />
+        <Route path="/studio/prompts" element={<PromptStudioPage />} />
+        <Route path="/studio/terminal" element={<TerminalStudioPage />} />
+        <Route path="/studio/vector" element={<VectorSearchPage />} />
+        <Route path="/studio/git" element={<GitStudioPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/help" element={<HelpPage />} />
         

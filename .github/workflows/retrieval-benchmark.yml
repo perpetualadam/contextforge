@@ -1,0 +1,73 @@
+# Golden-set retrieval benchmark — runs on PRs; fails if too few queries hit expected files.
+# Requires docker-compose stack + ingest of examples/small-repo (matches benchmarks/golden/ci_small_repo.json).
+
+name: Retrieval benchmark
+
+on:
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  golden-retrieval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Build and start stack
+        run: |
+          docker-compose up -d
+          echo "Waiting for health..."
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:8080/health || (docker-compose logs && exit 1)
+
+      - name: Ingest small-repo example
+        run: |
+          curl -sf -X POST "http://localhost:8080/ingest" \
+            -H "Content-Type: application/json" \
+            -d "{\"path\": \"$(pwd)/examples/small-repo\", \"recursive\": true}" \
+            || (docker-compose logs && exit 1)
+
+      - name: Run golden benchmark
+        id: bench
+        run: |
+          python scripts/run_retrieval_benchmark.py \
+            --gateway http://localhost:8080 \
+            --golden benchmarks/golden/ci_small_repo.json \
+            --output-dir benchmark-out \
+            --html benchmark-out/report.html \
+            --min-queries-passing 1 \
+            --fail-under-mean-recall 0.25
+        continue-on-error: false
+
+      - name: Append summary to job log
+        if: always()
+        run: |
+          if [ -f benchmark-out/benchmark-summary.md ]; then
+            cat benchmark-out/benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-benchmark
+          path: |
+            benchmark-out/benchmark-results.json
+            benchmark-out/benchmark-summary.md
+            benchmark-out/report.html
+
+      - name: Stop stack
+        if: always()
+        run: docker-compose down -v || true

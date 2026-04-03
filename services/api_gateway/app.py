@@ -13,16 +13,14 @@ import logging
 import hashlib
 import secrets
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal
 from datetime import datetime
 from functools import wraps
-from collections import defaultdict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import requests
 import structlog
 import base64
@@ -65,6 +63,13 @@ except ImportError:
     _early_logger = logging.getLogger(__name__)
     _early_logger.warning("Feature routes not available")
 
+try:
+    from github_server_routes import router as github_server_router
+    GITHUB_SERVER_ROUTES_ENABLED = True
+except ImportError:
+    GITHUB_SERVER_ROUTES_ENABLED = False
+    logging.getLogger(__name__).warning("GitHub server routes not available")
+
 # Early logger for import-time warnings
 _early_logger = logging.getLogger(__name__)
 
@@ -106,6 +111,12 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+try:
+    from oidc_rbac import enforce_workspace_rbac
+except ImportError:
+    def enforce_workspace_rbac(request, workspace_id, api_key, min_level="read"):
+        return
+
 # Service URLs - Use unified config if available, fallback to env vars
 if CONFIG_AVAILABLE and _config:
     VECTOR_INDEX_URL = _config.services.vector_index
@@ -121,21 +132,34 @@ else:
     TERMINAL_EXECUTOR_URL = os.getenv("TERMINAL_EXECUTOR_URL", "http://terminal-executor:8006")
 
 # CORS Configuration - Security hardened
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",") if o.strip()]
 ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-ALLOWED_HEADERS = ["Content-Type", "Authorization"]
+ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-CSRF-Token",
+    "X-Access-Token",
+    "X-Id-Token",
+    "X-User-Email",
+    "X-Auth-Request-Email",
+]
 
-# Security Configuration - Use unified config if available
-if CONFIG_AVAILABLE and _config:
-    RATE_LIMIT_REQUESTS = _config.security.rate_limit_requests if hasattr(_config, 'security') else 100
-    RATE_LIMIT_WINDOW = _config.security.rate_limit_window if hasattr(_config, 'security') else 60
-else:
-    RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
-    RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+# Rate limit, optional API key (shared with route modules e.g. github_server_routes)
+from gateway_security import (
+    API_KEY_ENABLED,
+    API_KEYS,
+    security,
+    rate_limiter,
+    get_client_id,
+    verify_api_key,
+    check_rate_limit,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW,
+    RATE_LIMIT_ENABLED,
+    apply_rate_limit_config,
+)
 
-API_KEY_ENABLED = os.getenv("API_KEY_ENABLED", "false").lower() == "true"
-API_KEYS = set(os.getenv("API_KEYS", "").split(",")) if os.getenv("API_KEYS") else set()
-RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+apply_rate_limit_config(_config if CONFIG_AVAILABLE else None)
 
 # --- Scalable LLM / request limits -------------------------------------------
 # These govern Pydantic validation bounds and HTTP timeouts.  Override via env
@@ -150,106 +174,6 @@ INGEST_PREPROCESS_TIMEOUT = int(os.getenv("INGEST_PREPROCESS_TIMEOUT", "300"))
 INGEST_INDEX_TIMEOUT = int(os.getenv("INGEST_INDEX_TIMEOUT", "600"))
 SERVICE_REQUEST_TIMEOUT = int(os.getenv("SERVICE_REQUEST_TIMEOUT", "60")) # general svc calls
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))  # max file upload size
-
-# Security utilities
-security = HTTPBearer(auto_error=False)
-
-
-class RateLimiter:
-    """Simple in-memory rate limiter."""
-
-    def __init__(self, max_requests: int = RATE_LIMIT_REQUESTS, window_seconds: int = RATE_LIMIT_WINDOW):
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        self.requests: Dict[str, List[float]] = defaultdict(list)
-
-    def is_allowed(self, client_id: str) -> bool:
-        """Check if a request from client_id is allowed."""
-        now = time.time()
-        window_start = now - self.window_seconds
-
-        # Clean old requests
-        self.requests[client_id] = [
-            req_time for req_time in self.requests[client_id]
-            if req_time > window_start
-        ]
-
-        # Check if under limit
-        if len(self.requests[client_id]) >= self.max_requests:
-            return False
-
-        # Record this request
-        self.requests[client_id].append(now)
-        return True
-
-    def get_remaining(self, client_id: str) -> int:
-        """Get remaining requests for client."""
-        now = time.time()
-        window_start = now - self.window_seconds
-        current_requests = len([
-            req_time for req_time in self.requests[client_id]
-            if req_time > window_start
-        ])
-        return max(0, self.max_requests - current_requests)
-
-
-# Initialize rate limiter
-rate_limiter = RateLimiter()
-
-
-def get_client_id(request: Request) -> str:
-    """Get a unique client identifier from request."""
-    # Use X-Forwarded-For if behind proxy, otherwise use client host
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-async def verify_api_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[str]:
-    """Verify API key if authentication is enabled."""
-    if not API_KEY_ENABLED:
-        return None
-
-    if not credentials:
-        raise HTTPException(
-            status_code=401,
-            detail="API key required. Provide Authorization: Bearer <api_key>",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    # Hash the provided key for comparison (if keys are stored hashed)
-    provided_key = credentials.credentials
-
-    if provided_key not in API_KEYS:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    return provided_key
-
-
-async def check_rate_limit(request: Request) -> None:
-    """Check rate limit for the request."""
-    if not RATE_LIMIT_ENABLED:
-        return
-
-    client_id = get_client_id(request)
-
-    if not rate_limiter.is_allowed(client_id):
-        remaining = rate_limiter.get_remaining(client_id)
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded. Try again in {RATE_LIMIT_WINDOW} seconds.",
-            headers={
-                "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
-                "X-RateLimit-Remaining": str(remaining),
-                "X-RateLimit-Reset": str(int(time.time()) + RATE_LIMIT_WINDOW)
-            }
-        )
-
 
 # Initialize Event Bus (Phase 1 integration)
 try:
@@ -269,7 +193,17 @@ rag_pipeline = RAGPipeline()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
-    # Startup
+    # Startup — internet-facing profile (optional; default off for local dev)
+    try:
+        from public_deployment import validate_public_deployment_settings
+
+        validate_public_deployment_settings()
+    except RuntimeError:
+        logger.critical("Public deployment validation failed — refusing to start")
+        raise
+    except ImportError:
+        logger.warning("public_deployment module not available — skipping PUBLIC_DEPLOYMENT checks")
+
     try:
         from services.startup_validator import validate_startup
         if not validate_startup():
@@ -307,7 +241,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,  # Enable for secure cookie-based auth
     allow_methods=ALLOWED_METHODS,
-    allow_headers=ALLOWED_HEADERS + ["X-CSRF-Token"],  # Add CSRF token header
+    allow_headers=ALLOWED_HEADERS,
 )
 
 # Add security middleware if available
@@ -332,6 +266,16 @@ if SECURITY_MODULES_ENABLED:
 
     logger.info("Security middleware enabled")
 
+# Host header validation (set TRUSTED_HOSTS=api.example.com,localhost for production)
+_trusted_hosts_raw = os.getenv("TRUSTED_HOSTS", "").strip()
+if _trusted_hosts_raw:
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+    _hosts = [h.strip() for h in _trusted_hosts_raw.split(",") if h.strip()]
+    if _hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=_hosts)
+        logger.info("Trusted host middleware enabled", trusted_host_count=len(_hosts))
+
 # Register authentication routes if available
 if SECURITY_MODULES_ENABLED:
     app.include_router(auth_router)
@@ -347,6 +291,11 @@ if REMOTE_AGENTS_ENABLED:
 if FEATURE_ROUTES_ENABLED:
     app.include_router(feature_router)
     logger.info("Feature routes registered (completion, inline-edit, agent, docs, composer, etc.)")
+
+# Reserved GitHub server API (future PR/issue integration; token via env only)
+if GITHUB_SERVER_ROUTES_ENABLED:
+    app.include_router(github_server_router)
+    logger.info("GitHub server status routes registered (/github/status)")
 
 
 # Pydantic models with input validation
@@ -373,6 +322,20 @@ class EditorContext(BaseModel):
     open_files: Optional[List[str]] = None
     recent_files: Optional[List[str]] = None
     git_diff: Optional[str] = None
+    git_branch: Optional[str] = None
+    changed_files: Optional[List[str]] = Field(
+        None,
+        description="Paths changed in working tree (git-aware freshness boost)",
+    )
+    diagnostic_messages: Optional[List[str]] = Field(
+        None,
+        description="Short linter/diagnostic strings from the editor (structured context)",
+    )
+    last_terminal_error: Optional[str] = Field(
+        None,
+        max_length=16000,
+        description="Recent terminal stderr or error line the user wants the model to see",
+    )
 
 
 class QueryRequest(BaseModel):
@@ -382,6 +345,15 @@ class QueryRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=100)
     task_scope: Optional[str] = Field(None, description="Task scope for retrieval: find_bugs, explain, refactor, test, general")
     editor_context: Optional[EditorContext] = None
+    workspace_id: Optional[str] = Field(
+        None,
+        max_length=256,
+        description="Stable id for explicit project memories (client-provided slug)",
+    )
+    coarse_routing: Optional[bool] = Field(
+        None,
+        description="Restrict search to lexical-likely files (large repos); None uses env",
+    )
     auto_terminal_mode: bool = False
     auto_terminal_timeout: int = Field(30, ge=1, le=300)
     auto_terminal_whitelist: Optional[List[str]] = Field(None, max_length=50)
@@ -394,6 +366,33 @@ class SearchRequest(BaseModel):
     provider: Optional[str] = Field(None, max_length=50)
     num_results: int = Field(5, ge=1, le=50)
     fetch_content: bool = False
+
+
+class VectorSearchGatewayRequest(BaseModel):
+    """Direct vector-index search (JSON body). Replaces query-param-only POST."""
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    top_k: int = Field(10, ge=1, le=100)
+    task_scope: str = "general"
+    expand_graph: bool = False
+    graph_depth: int = 1
+    graph_edge_types: List[str] = Field(default_factory=list)
+    enable_reranking: bool = False
+    coarse_routing: Optional[bool] = None
+    filter_file_paths: Optional[List[str]] = None
+    git_changed_files: Optional[List[str]] = None
+
+
+class WorkspaceMemoryAppend(BaseModel):
+    workspace_id: str = Field(..., min_length=1, max_length=256)
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
+class FeedbackQueryRequest(BaseModel):
+    """Thumbs up / down / neutral for self-hosted A/B and quality tracking."""
+    rating: int = Field(..., ge=-1, le=1, description="-1 bad, 0 neutral, 1 good")
+    trace_id: Optional[str] = Field(None, max_length=64)
+    latency_ms: Optional[float] = None
+    query_excerpt: Optional[str] = Field(None, max_length=500)
 
 
 class LLMRequest(BaseModel):
@@ -447,6 +446,26 @@ class ChatRequest(BaseModel):
     resolved_mentions: Optional[str] = None
     project_rules: Optional[str] = Field(None, max_length=100000)
     privacy_mode: bool = False
+    workspace_id: Optional[str] = Field(None, max_length=256)
+    coarse_routing: Optional[bool] = None
+    fix_until_green: bool = False
+    test_command: Optional[str] = Field(None, max_length=4096)
+    test_working_directory: Optional[str] = Field(None, max_length=1024)
+    fix_until_green_max_iterations: int = Field(3, ge=1, le=10)
+    fix_until_green_timeout: int = Field(120, ge=5, le=600)
+
+    @field_validator("test_working_directory")
+    @classmethod
+    def validate_test_cwd(cls, v: Optional[str]) -> Optional[str]:
+        if v and ".." in v:
+            raise ValueError("Path traversal not allowed")
+        return v
+
+    @model_validator(mode="after")
+    def validate_fix_until_green(self):
+        if self.fix_until_green and not (self.test_command and self.test_command.strip()):
+            raise ValueError("test_command is required when fix_until_green is true")
+        return self
 
 class CommitMessageRequest(BaseModel):
     diff: str
@@ -458,6 +477,52 @@ class CommitMessageResponse(BaseModel):
     message: str
     description: Optional[str] = None
     confidence: float
+
+
+class GitRepoCommandRequest(BaseModel):
+    """Whitelist-only git operations run via terminal executor (read-focused)."""
+
+    repo_path: str = Field(..., min_length=1, max_length=1024)
+    operation: Literal[
+        "status",
+        "branch",
+        "log",
+        "diff",
+        "diff_staged",
+        "remote",
+        "head",
+        "stash_list",
+    ]
+    log_limit: int = Field(20, ge=1, le=100)
+    timeout: int = Field(60, ge=5, le=300)
+
+    @field_validator("repo_path")
+    @classmethod
+    def validate_git_repo_path(cls, v: str) -> str:
+        if ".." in v:
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
+def _git_command_string(operation: str, log_limit: int) -> str:
+    if operation == "status":
+        return "git status -b --porcelain"
+    if operation == "branch":
+        return "git branch -a --no-color"
+    if operation == "log":
+        return f"git log -n {log_limit} --oneline --no-color"
+    if operation == "diff":
+        return "git diff --no-color"
+    if operation == "diff_staged":
+        return "git diff --cached --no-color"
+    if operation == "remote":
+        return "git remote -v"
+    if operation == "head":
+        return "git rev-parse HEAD"
+    if operation == "stash_list":
+        return "git stash list"
+    raise ValueError(f"Unknown git operation: {operation}")
+
 
 class FileUploadResponse(BaseModel):
     id: str
@@ -996,6 +1061,8 @@ async def query_context(
     # Check rate limit
     await check_rate_limit(http_request)
 
+    enforce_workspace_rbac(http_request, request.workspace_id, api_key, "read")
+
     # Generate trace ID for event correlation
     trace_id = str(uuid.uuid4())
 
@@ -1010,12 +1077,16 @@ async def query_context(
 
         logger.info("Processing query", query=request.query[:100], auto_terminal_mode=request.auto_terminal_mode, trace_id=trace_id)
 
+        ec = request.editor_context.model_dump() if request.editor_context else None
         response = rag_pipeline.answer_question(
             question=request.query,
             enable_web_search=request.enable_web_search,
             max_tokens=request.max_tokens,
             task_scope=request.task_scope,
-            editor_context=request.editor_context.model_dump() if request.editor_context else None,
+            editor_context=ec,
+            workspace_id=request.workspace_id,
+            coarse_routing=request.coarse_routing,
+            top_k=request.top_k,
         )
 
         # Auto-terminal execution if enabled
@@ -1084,6 +1155,24 @@ async def query_context(
             response["auto_terminal_results"] = auto_terminal_results
             response["meta"]["auto_commands_executed"] = len(auto_terminal_results)
 
+        response["meta"]["trace_id"] = trace_id
+
+        try:
+            from services.audit_log import audit_event
+
+            audit_event(
+                "query",
+                "/query",
+                client_id=get_client_id(http_request),
+                trace_id=trace_id,
+                extra={
+                    "num_contexts": response["meta"].get("num_contexts"),
+                    "backend": response["meta"].get("backend"),
+                },
+            )
+        except Exception as audit_err:
+            logger.debug("audit_log skipped: %s", audit_err)
+
         logger.info("Query processed successfully",
                    backend=response["meta"].get("backend"),
                    latency=response["meta"].get("total_latency_ms"),
@@ -1117,12 +1206,13 @@ async def query_context(
 
 
 @app.post("/search/vector")
-async def search_vector_index(query: str, top_k: int = 10):
-    """Search the vector index directly."""
+async def search_vector_index(request: VectorSearchGatewayRequest):
+    """Search the vector index directly (JSON body)."""
     try:
+        payload = request.model_dump(exclude_none=True)
         response = requests.post(
             f"{VECTOR_INDEX_URL}/search",
-            json={"query": query, "top_k": top_k},
+            json=payload,
             timeout=SERVICE_REQUEST_TIMEOUT
         )
         response.raise_for_status()
@@ -1261,6 +1351,8 @@ async def chat_conversation(
     try:
         logger.info("Processing chat request", messages_count=len(request.messages))
 
+        enforce_workspace_rbac(http_request, request.workspace_id, api_key, "write")
+
         # Get the latest user message
         if not request.messages or request.messages[-1].role != 'user':
             raise HTTPException(status_code=400, detail="Last message must be from user")
@@ -1296,13 +1388,61 @@ async def chat_conversation(
         if request.project_rules:
             rules_context = f"\nPROJECT RULES:\n{request.project_rules[:10000]}\n"
 
+        if request.fix_until_green:
+            from fix_until_green import assert_fix_until_green_allowed, clamp_iterations, fix_until_green_loop
+
+            assert_fix_until_green_allowed()
+            if not request.enable_context:
+                raise HTTPException(
+                    status_code=400,
+                    detail="fix_until_green requires enable_context=true",
+                )
+            if rules_context:
+                enhanced_query = rules_context + enhanced_query.rstrip("\n")
+            max_iter = clamp_iterations(request.fix_until_green_max_iterations)
+
+            def answer_fn(question: str):
+                return rag_pipeline.answer_question(
+                    question=question,
+                    enable_web_search=request.enable_web_search,
+                    max_tokens=request.max_tokens,
+                    editor_context=request.editor_context.model_dump() if request.editor_context else None,
+                    workspace_id=request.workspace_id,
+                    coarse_routing=request.coarse_routing,
+                )
+
+            loop_out = fix_until_green_loop(
+                max_iterations=max_iter,
+                test_command=request.test_command.strip(),
+                test_working_directory=request.test_working_directory,
+                test_timeout=request.fix_until_green_timeout,
+                terminal_executor_url=TERMINAL_EXECUTOR_URL,
+                request_timeout=float(SERVICE_REQUEST_TIMEOUT),
+                answer_fn=answer_fn,
+                initial_question=enhanced_query,
+            )
+            response = loop_out["response"]
+            meta = response.get("meta") or {}
+            meta["fix_until_green"] = loop_out["fix_until_green"]
+            return {
+                "response": response["answer"],
+                "context_used": len(response.get("contexts", [])),
+                "web_results_used": len(response.get("web_results", [])),
+                "meta": meta,
+            }
+
         # Use RAG pipeline for context-aware response if enabled
         if request.enable_context:
+            eq = enhanced_query
+            if rules_context:
+                eq = rules_context + eq.rstrip("\n")
             response = rag_pipeline.answer_question(
-                question=enhanced_query,
+                question=eq,
                 enable_web_search=request.enable_web_search,
                 max_tokens=request.max_tokens,
                 editor_context=request.editor_context.model_dump() if request.editor_context else None,
+                workspace_id=request.workspace_id,
+                coarse_routing=request.coarse_routing,
             )
 
             return {
@@ -1443,6 +1583,41 @@ Generate only the commit message, no explanation."""
     except Exception as e:
         logger.error("Commit message generation failed", error=str(e))
         raise HTTPException(status_code=500, detail=f"Commit message generation failed: {e}")
+
+
+@app.post("/git/repo-command")
+async def git_repo_command(
+    request: GitRepoCommandRequest,
+    http_request: Request,
+    _api_key: Optional[str] = Depends(verify_api_key),
+):
+    """
+    Run a fixed, whitelist git command in repo_path via the terminal executor.
+    Intended for the web UI; mutating git operations are not exposed here.
+    """
+    await check_rate_limit(http_request)
+    try:
+        cmd = _git_command_string(request.operation, request.log_limit)
+        logger.info("Git repo command", operation=request.operation, repo=request.repo_path[:200])
+
+        response = requests.post(
+            f"{TERMINAL_EXECUTOR_URL}/execute",
+            json={
+                "command": cmd,
+                "working_directory": request.repo_path,
+                "timeout": request.timeout,
+                "stream": False,
+            },
+            timeout=request.timeout + 15,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.Timeout:
+        logger.error("Git repo command timed out", operation=request.operation)
+        raise HTTPException(status_code=408, detail="Git command execution timed out")
+    except requests.exceptions.RequestException as e:
+        logger.error("Git repo command failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Git command failed: {e}")
 
 
 # File Upload and Processing endpoints
@@ -1802,8 +1977,16 @@ async def get_index_stats():
 @app.get("/config")
 async def get_configuration():
     """Get current configuration."""
+    try:
+        from public_deployment import audit_public_deployment
+
+        deployment_info = audit_public_deployment()
+    except ImportError:
+        deployment_info = {"public_deployment": False, "ready": True, "note": "audit unavailable"}
+
     if CONFIG_AVAILABLE and _config:
         return {
+            "deployment": deployment_info,
             "llm_priority": _config.llm.priority,
             "enable_web_search": _config.web_search.enabled if hasattr(_config, 'web_search') else False,
             "vector_top_k": _config.indexing.vector_top_k,
@@ -1832,6 +2015,7 @@ async def get_configuration():
     else:
         # Fallback to environment variables
         return {
+            "deployment": deployment_info,
             "llm_priority": os.getenv("LLM_PRIORITY", "ollama,mock").split(","),
             "enable_web_search": os.getenv("ENABLE_WEB_SEARCH", "True").lower() == "true",
             "vector_top_k": int(os.getenv("VECTOR_TOP_K", "10")),
@@ -1845,6 +2029,97 @@ async def get_configuration():
                 "terminal_executor": TERMINAL_EXECUTOR_URL
             }
         }
+
+
+@app.get("/retrieval/metrics")
+async def get_retrieval_metrics_endpoint():
+    """In-process retrieval instrumentation (latency histograms, cache hit rate, rerank lift)."""
+    try:
+        from services.retrieval_metrics import get_retrieval_metrics
+
+        rm = get_retrieval_metrics()
+        cache = rag_pipeline.get_cache_stats()
+        return rm.snapshot(cache_stats=cache)
+    except Exception as e:
+        logger.error("retrieval metrics failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/retrieval/metrics/reset")
+async def reset_retrieval_metrics_endpoint():
+    """Reset in-process retrieval metric samples (not vector-index internal metrics)."""
+    try:
+        from services.retrieval_metrics import get_retrieval_metrics
+
+        get_retrieval_metrics().reset()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/workspace/memories")
+async def append_workspace_memory_endpoint(body: WorkspaceMemoryAppend):
+    """Append an explicit project memory (stored locally under data/workspace_memories)."""
+    try:
+        from services.workspace_memory import append_memory
+
+        return append_memory(body.workspace_id, body.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/workspace/memories")
+async def list_workspace_memories_endpoint(workspace_id: str):
+    """List memories for a workspace id."""
+    try:
+        from services.workspace_memory import list_memories
+
+        return {"workspace_id": workspace_id, "memories": list_memories(workspace_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/workspace/memories")
+async def clear_workspace_memories_endpoint(workspace_id: str):
+    """Clear all memories for a workspace id."""
+    try:
+        from services.workspace_memory import clear_memories
+
+        clear_memories(workspace_id)
+        return {"status": "cleared", "workspace_id": workspace_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback/query")
+async def post_query_feedback(body: FeedbackQueryRequest, http_request: Request):
+    """Record user feedback for an answer (optional trace_id from /query meta)."""
+    try:
+        from services.retrieval_feedback import append_feedback
+
+        append_feedback(
+            {
+                "rating": body.rating,
+                "trace_id": body.trace_id,
+                "latency_ms": body.latency_ms,
+                "query_excerpt": body.query_excerpt,
+                "client_id": get_client_id(http_request),
+            }
+        )
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/retrieval/insights")
+async def get_retrieval_insights():
+    """Aggregates from feedback JSONL (mean recall if logged, latency p95, thumbs)."""
+    try:
+        from services.retrieval_feedback import aggregate_insights
+
+        return aggregate_insights()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Terminal execution endpoints

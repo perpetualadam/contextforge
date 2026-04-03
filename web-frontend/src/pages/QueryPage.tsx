@@ -2,15 +2,28 @@ import { useState } from 'react';
 import { Search, FileCode, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Button, Input, Card, CardHeader, CardTitle, CardContent, CodeBlock, Spinner } from '../components/ui';
-import { useQuery, useConnection } from '../store';
+import { useQuery, useConnection, useWorkspace, buildEditorContext, clampTokens } from '../store';
 import apiClient, { CodeContext } from '../api/client';
 
 export function QueryPage() {
   const [query, setQuery] = useState('');
+  const [taskScope, setTaskScope] = useState('');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
-  const [topK, setTopK] = useState(5);
-  
+  const [topK, setTopK] = useState(10);
+
   const { isOnline } = useConnection();
+  const {
+    projectRules,
+    privacyMode,
+    queryMaxTokens,
+    contextCurrentFile,
+    contextSelection,
+    contextCursorLine,
+    contextOpenFiles,
+    contextGitDiff,
+    queryAutoTerminal,
+    queryAutoTerminalTimeout,
+  } = useWorkspace();
   const { lastResult, isLoading, error, setResult, setLoading, setError, setQuery: storeSetQuery } = useQuery();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -22,10 +35,26 @@ export function QueryPage() {
     storeSetQuery(query);
 
     try {
+      const editor_context = buildEditorContext({
+        contextCurrentFile,
+        contextSelection,
+        contextCursorLine,
+        contextOpenFiles,
+        contextGitDiff,
+      });
+
       const response = await apiClient.query({
         query: query.trim(),
+        max_tokens: clampTokens(queryMaxTokens),
         enable_web_search: enableWebSearch,
-        top_k: topK,
+        top_k: Math.min(100, Math.max(1, Math.floor(topK))),
+        ...(taskScope.trim() ? { task_scope: taskScope.trim() } : {}),
+        ...(projectRules.trim() ? { project_rules: projectRules.trim() } : {}),
+        privacy_mode: privacyMode,
+        ...(editor_context ? { editor_context } : {}),
+        ...(queryAutoTerminal
+          ? { auto_terminal_mode: true, auto_terminal_timeout: queryAutoTerminalTimeout }
+          : {}),
       });
 
       setResult({
@@ -70,6 +99,18 @@ export function QueryPage() {
             </Button>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Task scope (optional)
+            </label>
+            <Input
+              value={taskScope}
+              onChange={(e) => setTaskScope(e.target.value)}
+              placeholder="e.g. auth, API layer — narrows retrieval"
+              disabled={isLoading}
+            />
+          </div>
+
           {/* Options */}
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -84,16 +125,15 @@ export function QueryPage() {
             </label>
 
             <label className="flex items-center gap-2">
-              <span className="text-gray-700 dark:text-gray-300">Results:</span>
-              <select
+              <span className="text-gray-700 dark:text-gray-300">Top K (1–100):</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
                 value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-                className="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
-              >
-                {[3, 5, 10, 15, 20].map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
+                onChange={(e) => setTopK(Number(e.target.value) || 1)}
+                className="w-20 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              />
             </label>
           </div>
         </form>

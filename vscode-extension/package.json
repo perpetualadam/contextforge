@@ -57,9 +57,45 @@
       },
       {
         "command": "contextforge.executeTerminal",
-        "title": "Execute Terminal Command",
+        "title": "Execute Terminal Command (API sandbox)",
+        "category": "ContextForge",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "contextforge.terminalHub",
+        "title": "Terminal: hub (integrated shell + API)",
         "category": "ContextForge",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "contextforge.openIntegratedTerminal",
+        "title": "Terminal: open integrated shell (workspace)",
+        "category": "ContextForge",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "contextforge.runInIntegratedTerminal",
+        "title": "Terminal: run command in integrated shell",
+        "category": "ContextForge",
+        "icon": "$(play)"
+      },
+      {
+        "command": "contextforge.runSelectionInIntegratedTerminal",
+        "title": "Terminal: run selection in integrated shell",
+        "category": "ContextForge",
+        "icon": "$(run)"
+      },
+      {
+        "command": "contextforge.runPackageScript",
+        "title": "Terminal: run package.json script",
+        "category": "ContextForge",
+        "icon": "$(package)"
+      },
+      {
+        "command": "contextforge.runMakefileTarget",
+        "title": "Terminal: run Makefile target",
+        "category": "ContextForge",
+        "icon": "$(tools)"
       },
       {
         "command": "contextforge.suggestTerminal",
@@ -84,6 +120,18 @@
         "title": "Open Chat",
         "category": "ContextForge",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "contextforge.setupWizard",
+        "title": "Setup: Check API & Index",
+        "category": "ContextForge",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "contextforge.quickAgentFlow",
+        "title": "Quick task (opens chat)",
+        "category": "ContextForge",
+        "icon": "$(run)"
       },
       {
         "command": "contextforge.openPublishHub",
@@ -471,6 +519,29 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically check for lint errors after AI edits and offer to fix"
+        },
+        "contextforge.integratedTerminalProfileName": {
+          "type": "string",
+          "default": "ContextForge",
+          "description": "Name shown on integrated terminal tabs created by ContextForge"
+        },
+        "contextforge.packageScriptRunner": {
+          "type": "string",
+          "enum": ["npm", "pnpm", "yarn"],
+          "default": "npm",
+          "description": "Package manager used for 'Run package.json script'"
+        },
+        "contextforge.makeBinary": {
+          "type": "string",
+          "default": "make",
+          "description": "Make executable for Makefile targets (e.g. make, gmake, mingw32-make)"
+        },
+        "contextforge.makefileIncludeDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "When listing Makefile targets, follow this many levels of include / -include / sinclude (0 = root file only)."
         }
       }
     },
@@ -495,6 +566,18 @@
         {
           "command": "contextforge.openPublishHub",
           "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.terminalHub",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.openIntegratedTerminal",
+          "when": "contextforge.enabled"
+        },
+        {
+          "command": "contextforge.runMakefileTarget",
+          "when": "contextforge.enabled"
         }
       ],
       "editor/context": [
@@ -511,6 +594,11 @@
         {
           "command": "contextforge.smartApply",
           "when": "contextforge.enabled",
+          "group": "contextforge"
+        },
+        {
+          "command": "contextforge.runSelectionInIntegratedTerminal",
+          "when": "contextforge.enabled && editorHasSelection",
           "group": "contextforge"
         }
       ],
@@ -541,7 +629,7 @@
         "when": "contextforge.enabled"
       },
       {
-        "command": "contextforge.executeTerminal",
+        "command": "contextforge.terminalHub",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
         "when": "contextforge.enabled"

@@ -172,6 +172,16 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                     }).trim() || undefined;
                 }
             } catch { gitDiff = undefined; }
+            let diagnostic_messages: string[] | undefined;
+            if (editor) {
+                const ds = vscode.languages.getDiagnostics(editor.document.uri);
+                if (ds.length > 0) {
+                    diagnostic_messages = ds.slice(0, 50).map(
+                        d =>
+                            `[${vscode.DiagnosticSeverity[d.severity]}] ${d.message} (line ${d.range.start.line + 1})`
+                    );
+                }
+            }
             const editorContext = {
                 current_file: editor?.document.uri.fsPath,
                 current_selection: editor?.document.getText(editor.selection) || undefined,
@@ -181,6 +191,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                     .map(t => (t.input as any)?.uri?.fsPath)
                     .filter(Boolean),
                 git_diff: gitDiff,
+                diagnostic_messages,
             };
 
             // Feature #5: Parse @ mentions before sending

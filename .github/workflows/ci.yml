@@ -223,6 +223,7 @@ jobs:
         python -m py_compile scripts/ingest_example.py
         python -m py_compile scripts/query_example.py
         python -m py_compile scripts/test_llm.py
+        python -m py_compile scripts/run_retrieval_benchmark.py
     
     - name: Test script help output
       run: |

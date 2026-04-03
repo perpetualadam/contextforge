@@ -8,6 +8,7 @@ Copyright (c) 2025 ContextForge
 """
 
 import os
+import json
 import logging
 from typing import Optional, List, Dict, Any
 
@@ -66,7 +67,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "POST",
                 f"{API_GATEWAY_URL}/query",
                 json={
-                    "question": question,
+                    "query": question,
                     "enable_web_search": enable_web_search,
                     "max_tokens": max_tokens
                 }
@@ -149,8 +150,8 @@ def register_tools(mcp: FastMCP) -> None:
         try:
             result = await _make_request(
                 "POST",
-                f"{API_GATEWAY_URL}/vector/search",
-                json={"query": query, "top_k": top_k}
+                f"{API_GATEWAY_URL}/search/vector",
+                json={"query": query, "top_k": top_k, "task_scope": "general"}
             )
             
             results = result.get("results", [])
@@ -159,9 +160,11 @@ def register_tools(mcp: FastMCP) -> None:
             
             response = f"**Codebase Search Results:**\n\n"
             for i, r in enumerate(results, 1):
-                response += f"{i}. **{r.get('file_path', 'Unknown file')}**\n"
+                meta = r.get("meta") or {}
+                fp = meta.get("file_path", "Unknown file")
+                response += f"{i}. **{fp}**\n"
                 response += f"   Score: {r.get('score', 0):.3f}\n"
-                content = r.get('content', '')[:200]
+                content = (r.get("text") or "")[:200]
                 response += f"   ```\n   {content}...\n   ```\n\n"
 
             return response
@@ -276,6 +279,19 @@ def register_tools(mcp: FastMCP) -> None:
         except httpx.HTTPError as e:
             logger.error(f"Failed to get LLM adapters: {e}")
             return f"Error getting LLM adapters: {str(e)}"
+
+    @mcp.tool()
+    async def get_retrieval_metrics() -> str:
+        """
+        Return retrieval instrumentation: latency histograms, cache hit rate, rerank lift samples.
+        Calls GET /retrieval/metrics on the API gateway.
+        """
+        try:
+            result = await _make_request("GET", f"{API_GATEWAY_URL}/retrieval/metrics")
+            return json.dumps(result, indent=2)[:12000]
+        except httpx.HTTPError as e:
+            logger.error(f"Retrieval metrics failed: {e}")
+            return f"Error: {str(e)}"
 
     @mcp.tool()
     async def get_system_health() -> str:

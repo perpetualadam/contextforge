@@ -30,6 +30,10 @@ export interface QueryRequest {
   top_k?: number;
   task_scope?: string;
   editor_context?: EditorContext;
+  project_rules?: string;
+  privacy_mode?: boolean;
+  auto_terminal_mode?: boolean;
+  auto_terminal_timeout?: number;
 }
 
 export interface QueryResponse {
@@ -69,8 +73,12 @@ export interface Attachment {
 
 export interface ChatRequest {
   messages: ChatMessage[];
+  /** Local-only id for UI; stripped before POST (not in gateway schema). */
   conversation_id?: string;
   enable_context?: boolean;
+  max_tokens?: number;
+  enable_web_search?: boolean;
+  provider?: string;
   editor_context?: EditorContext;
   attachments?: Attachment[];
   resolved_mentions?: string;
@@ -161,6 +169,110 @@ export interface ComposerStartRequest {
   privacy_mode?: boolean;
 }
 
+export interface MultiCursorEditRequest {
+  file_content: string;
+  instruction: string;
+  language?: string;
+  file_path?: string;
+}
+
+export interface EditLocation {
+  start_line: number;
+  start_col: number;
+  end_line: number;
+  end_col: number;
+  new_text: string;
+}
+
+export interface MultiCursorEditResponse {
+  edits: EditLocation[];
+}
+
+export interface TerminalExecuteRequest {
+  command: string;
+  working_directory?: string;
+  timeout?: number;
+}
+
+export interface TerminalSuggestRequest {
+  task_description: string;
+  context?: string;
+  working_directory?: string;
+}
+
+export type GitRepoOperation =
+  | 'status'
+  | 'branch'
+  | 'log'
+  | 'diff'
+  | 'diff_staged'
+  | 'remote'
+  | 'head'
+  | 'stash_list';
+
+export interface GitRepoCommandRequest {
+  repo_path: string;
+  operation: GitRepoOperation;
+  log_limit?: number;
+  timeout?: number;
+}
+
+/** Response shape from terminal executor (forwarded by gateway). */
+export interface GitCommandTerminalResult {
+  command: string;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  execution_time: number;
+  working_directory: string;
+}
+
+export interface CommitMessageGenerateRequest {
+  diff: string;
+  staged_files: string[];
+  branch: string;
+  recent_commits: string[];
+}
+
+export interface CommitMessageGenerateResponse {
+  message: string;
+  description?: string;
+  confidence: number;
+}
+
+export interface PromptEnhancementRequest {
+  prompt: string;
+  context?: string;
+  style?: string;
+}
+
+export interface PromptEnhancementResponse {
+  original: string;
+  enhanced: string;
+  suggestions: string[];
+  improvements: string[];
+}
+
+export interface PromptContextEnhanceRequest {
+  prompt: string;
+  context?: string;
+  task_type?: string;
+  code?: string;
+  file_path?: string;
+  include_embeddings?: boolean;
+  include_git?: boolean;
+  include_tests?: boolean;
+  max_tokens?: number;
+}
+
+export interface PromptContextEnhanceResponse {
+  original: string;
+  enhanced: string;
+  context_sections: string[];
+  estimated_tokens: number;
+  task_type: string;
+}
+
 export interface ChatResponse {
   response: string;
   conversation_id: string;
@@ -204,6 +316,15 @@ export interface HealthStatus {
   status: string;
   services: Record<string, { status: string; latency_ms?: number }>;
   version?: string;
+}
+
+/** GET /github/status — future server-side GitHub API (token on gateway only). */
+export interface GitHubServerStatus {
+  github_server_configured: boolean;
+  github_server_disabled: boolean;
+  implementation: string;
+  planned_capabilities: string[];
+  client_hint: string;
 }
 
 class ApiClient {
@@ -370,6 +491,11 @@ class ApiClient {
     return this.request<Record<string, unknown>>('/config');
   }
 
+  /** Reserved for future server-side GitHub (PRs/issues); token lives on API host only. */
+  async getGitHubServerStatus(): Promise<GitHubServerStatus> {
+    return this.request<GitHubServerStatus>('/github/status');
+  }
+
   // Query
   async query(request: QueryRequest): Promise<QueryResponse> {
     return this.request<QueryResponse>('/query', {
@@ -380,9 +506,11 @@ class ApiClient {
 
   // Chat
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    const { conversation_id, ...body } = request;
+    void conversation_id;
     return this.request<ChatResponse>('/chat', {
       method: 'POST',
-      body: JSON.stringify(request),
+      body: JSON.stringify(body),
     });
   }
 
@@ -411,6 +539,28 @@ class ApiClient {
     });
   }
 
+  // Git (server-side repo on gateway host; whitelist commands via /git/repo-command)
+  async gitRepoCommand(request: GitRepoCommandRequest): Promise<GitCommandTerminalResult> {
+    return this.request<GitCommandTerminalResult>('/git/repo-command', {
+      method: 'POST',
+      body: JSON.stringify({
+        repo_path: request.repo_path,
+        operation: request.operation,
+        log_limit: request.log_limit ?? 20,
+        timeout: request.timeout ?? 60,
+      }),
+    });
+  }
+
+  async generateCommitMessage(
+    request: CommitMessageGenerateRequest
+  ): Promise<CommitMessageGenerateResponse> {
+    return this.request<CommitMessageGenerateResponse>('/git/commit-message', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
   // Search
   async searchVector(query: string, topK = 10) {
     return this.request('/search/vector', {
@@ -419,16 +569,15 @@ class ApiClient {
     });
   }
 
-  // File Upload
-  async uploadFile(file: File): Promise<{ file_id: string; content: string }> {
-    // Validate file type and size
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown'];
-    const maxSize = 50 * 1024 * 1024; // 50 MB
-
-    if (!allowedTypes.includes(file.type)) {
-      throw new Error(`File type not allowed: ${file.type}. Allowed types: ${allowedTypes.join(', ')}`);
-    }
-
+  // File Upload (gateway extracts text / images; any type up to server MAX_FILE_SIZE_MB)
+  async uploadFile(file: File): Promise<{
+    id: string;
+    name: string;
+    type: string;
+    data: string;
+    extractedText?: string | null;
+  }> {
+    const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       throw new Error(`File too large: ${(file.size / 1024 / 1024).toFixed(2)} MB. Maximum size: 50 MB`);
     }
@@ -442,7 +591,6 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    // Add CSRF token for file upload
     if (this.csrfToken) {
       headers['X-CSRF-Token'] = this.csrfToken;
     }
@@ -450,14 +598,28 @@ class ApiClient {
     const response = await fetch(`${this.baseUrl}/files/upload`, {
       method: 'POST',
       headers,
-      credentials: 'include', // Include cookies for authentication
+      credentials: 'include',
       body: formData,
     });
 
     if (!response.ok) {
       throw new Error(`Upload failed: ${response.statusText}`);
     }
-    return response.json();
+    const j = (await response.json()) as {
+      id: string;
+      name: string;
+      type: string;
+      data: string;
+      extractedText?: string | null;
+      extracted_text?: string | null;
+    };
+    return {
+      id: j.id,
+      name: j.name,
+      type: j.type,
+      data: j.data,
+      extractedText: j.extractedText ?? j.extracted_text ?? undefined,
+    };
   }
 
   // Inline Completion (#1)
@@ -526,6 +688,46 @@ class ApiClient {
 
   async composerStatus(sessionId: string) {
     return this.request(`/composer/status/${sessionId}`);
+  }
+
+  async multiCursorEdit(request: MultiCursorEditRequest): Promise<MultiCursorEditResponse> {
+    return this.request<MultiCursorEditResponse>('/multi-cursor-edit', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async terminalExecute(request: TerminalExecuteRequest): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('/terminal/execute', {
+      method: 'POST',
+      body: JSON.stringify({
+        command: request.command,
+        working_directory: request.working_directory,
+        timeout: request.timeout ?? 60,
+        stream: false,
+      }),
+    });
+  }
+
+  async terminalSuggest(request: TerminalSuggestRequest): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('/terminal/suggest', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async promptEnhance(request: PromptEnhancementRequest): Promise<PromptEnhancementResponse> {
+    return this.request<PromptEnhancementResponse>('/prompts/enhance', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async promptContextEnhance(request: PromptContextEnhanceRequest): Promise<PromptContextEnhanceResponse> {
+    return this.request<PromptContextEnhanceResponse>('/prompts/context-enhance', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
   }
 
   isConnected(): boolean {

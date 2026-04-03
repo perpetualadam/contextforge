@@ -9,6 +9,7 @@ import { GitIntegration, GitConfig, VCSProvider } from './gitIntegration';
 import { AgentStatusProvider } from './agentPanel';
 import { TaskPanelProvider } from './tools/taskPanel';
 import { DiagnosticsProvider } from './tools/diagnostics';
+import { registerIntegratedTerminalCommands } from './integratedTerminal';
 
 interface ContextForgeConfig {
     apiUrl: string;
@@ -66,6 +67,8 @@ interface EditorContextPayload {
     open_files: string[];
     git_diff: string | undefined;
     recent_files: string[];
+    diagnostic_messages?: string[];
+    last_terminal_error?: string;
 }
 
 interface AutoTerminalResult {
@@ -102,6 +105,13 @@ interface QueryResponse {
         num_contexts: number;
         num_web_results: number;
         auto_commands_executed?: number;
+        trace_id?: string;
+        retrieval_diagnostics?: {
+            empty?: boolean;
+            hints?: string[];
+            vector_index_reachable?: boolean;
+            suggested_actions?: { action?: string; label?: string; hint?: string }[];
+        };
     };
 }
 
@@ -729,6 +739,60 @@ export function activate(context: vscode.ExtensionContext) {
     // Chat commands
     const openChatCommand = vscode.commands.registerCommand('contextforge.openChat', () => {
         chatProvider.openChat();
+    });
+
+    const setupWizardCommand = vscode.commands.registerCommand('contextforge.setupWizard', async () => {
+        const c = getConfig();
+        try {
+            const health = await axios.get(`${c.apiUrl}/health`, { timeout: 10000 });
+            let stats = '';
+            try {
+                const st = await axios.get(`${c.apiUrl}/index/stats`, { timeout: 8000 });
+                const t = st.data?.total_vectors ?? st.data?.total_chunks ?? '?';
+                stats = `\nIndex vectors/chunks (approx): ${t}`;
+            } catch {
+                stats = '\n(Index stats unavailable — is the stack up?)';
+            }
+            const openSettings = await vscode.window.showInformationMessage(
+                `ContextForge API: ${c.apiUrl}\nStatus: ${health.data?.status || 'ok'}${stats}`,
+                'Open ContextForge settings'
+            );
+            if (openSettings === 'Open ContextForge settings') {
+                await vscode.commands.executeCommand('workbench.action.openSettings', 'contextforge');
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(
+                `Cannot reach ContextForge at ${c.apiUrl}. Start Docker / check contextforge.apiUrl. (${e.message})`
+            );
+        }
+    });
+
+    const quickAgentFlowCommand = vscode.commands.registerCommand('contextforge.quickAgentFlow', async () => {
+        const pick = await vscode.window.showQuickPick(
+            [
+                {
+                    label: '$(comment-discussion) Explain',
+                    description: 'Explain selection or file',
+                    detail: 'Opens chat — add details in the panel',
+                },
+                {
+                    label: '$(edit) Refactor',
+                    description: 'Refactor selection',
+                    detail: 'Opens chat — describe the refactor',
+                },
+                {
+                    label: '$(beaker) Tests',
+                    description: 'Add or fix tests',
+                    detail: 'Opens chat — point to code under test',
+                },
+            ],
+            { title: 'ContextForge quick task', placeHolder: 'Choose a starting point' }
+        );
+        if (!pick) {
+            return;
+        }
+        chatProvider.openChat();
+        vscode.window.showInformationMessage(`${pick.label} — describe the task in the chat panel.`);
     });
 
     const openPublishHubCommand = vscode.commands.registerCommand('contextforge.openPublishHub', () => {
@@ -1633,6 +1697,8 @@ export function activate(context: vscode.ExtensionContext) {
         showTerminalProcesses,
         toggleAutoTerminalCommand,
         openChatCommand,
+        setupWizardCommand,
+        quickAgentFlowCommand,
         openPublishHubCommand,
         openPromptGeneratorCommand,
         clearChatHistoryCommand,
@@ -1656,6 +1722,7 @@ export function activate(context: vscode.ExtensionContext) {
         multiCursorEditCommand,
         indexDocsCommand,
         composerCommand,
+        ...registerIntegratedTerminalCommands(),
     );
 
     // File-save incremental re-indexing
@@ -1711,6 +1778,18 @@ function gatherEditorContext(): EditorContextPayload {
     } catch {
         gitDiff = undefined;
     }
+
+    let diagnostic_messages: string[] | undefined;
+    if (editor) {
+        const ds = vscode.languages.getDiagnostics(editor.document.uri);
+        if (ds.length > 0) {
+            diagnostic_messages = ds.slice(0, 50).map(
+                d =>
+                    `[${vscode.DiagnosticSeverity[d.severity]}] ${d.message} (line ${d.range.start.line + 1})`
+            );
+        }
+    }
+
     return {
         current_file: editor?.document.uri.fsPath,
         current_selection: editor?.document.getText(editor.selection) || undefined,
@@ -1721,6 +1800,7 @@ function gatherEditorContext(): EditorContextPayload {
             .filter(Boolean) as string[],
         git_diff: gitDiff,
         recent_files: [],
+        diagnostic_messages,
     };
 }
 
@@ -1749,6 +1829,35 @@ async function queryContextForge(question: string, config: ContextForgeConfig, w
             progress.report({ increment: 100, message: "Complete" });
 
             const queryResponse: QueryResponse = response.data;
+
+            const rd = queryResponse.meta?.retrieval_diagnostics;
+            if (rd?.empty) {
+                const hintText = (rd.hints || []).join(' ');
+                vscode.window
+                    .showInformationMessage(`No indexed context matched. ${hintText}`, 'Ingest workspace')
+                    .then(sel => {
+                        if (sel === 'Ingest workspace') {
+                            vscode.commands.executeCommand('contextforge.ingestWorkspace');
+                        }
+                    });
+            }
+
+            const tid = queryResponse.meta?.trace_id;
+            if (tid) {
+                vscode.window
+                    .showInformationMessage('Was this answer helpful?', 'Yes', 'No', 'Skip')
+                    .then(sel => {
+                        if (sel === 'Yes' || sel === 'No') {
+                            axios
+                                .post(`${config.apiUrl}/feedback/query`, {
+                                    rating: sel === 'Yes' ? 1 : -1,
+                                    trace_id: tid,
+                                    latency_ms: queryResponse.meta?.total_latency_ms,
+                                })
+                                .catch(() => undefined);
+                        }
+                    });
+            }
 
             // Show notification if auto-commands were executed
             if (queryResponse.auto_terminal_results && queryResponse.auto_terminal_results.length > 0) {

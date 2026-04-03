@@ -57,6 +57,9 @@ class SearchRequest(BaseModel):
     graph_edge_types: List[str] = []
     task_scope: str = "general"
     enable_reranking: bool = False
+    coarse_routing: Optional[bool] = None
+    filter_file_paths: Optional[List[str]] = None
+    git_changed_files: Optional[List[str]] = None
 
 
 class EmbeddingRequest(BaseModel):
@@ -112,6 +115,9 @@ async def search_index(request: SearchRequest):
             graph_edge_types=request.graph_edge_types or None,
             task_scope=request.task_scope if request.task_scope != "general" else None,
             enable_reranking=request.enable_reranking,
+            coarse_routing=request.coarse_routing,
+            filter_file_paths=request.filter_file_paths,
+            git_changed_files=request.git_changed_files,
         )
         logger.info("Search completed", num_results=result["total_results"])
         return result

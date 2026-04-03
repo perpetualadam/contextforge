@@ -1,0 +1,21 @@
+{
+  "name": "contextforge_gateway_smoke",
+  "description": "Smoke queries for this repository (adjust after ingest).",
+  "queries": [
+    {
+      "q": "RAGPipeline retrieve contexts",
+      "relevant_file_substrings": ["rag.py", "retrieve"],
+      "task_scope": "explain"
+    },
+    {
+      "q": "vector index hybrid search fusion",
+      "relevant_file_substrings": ["index.py", "vector"],
+      "task_scope": "explain"
+    },
+    {
+      "q": "FastAPI query endpoint",
+      "relevant_file_substrings": ["app.py", "query"],
+      "task_scope": "general"
+    }
+  ]
+}

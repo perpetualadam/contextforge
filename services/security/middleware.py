@@ -25,9 +25,11 @@ logger = logging.getLogger(__name__)
 ENABLE_SECURITY_HEADERS = os.getenv("ENABLE_SECURITY_HEADERS", "true").lower() in ("true", "1", "yes")
 ENABLE_HSTS = os.getenv("ENABLE_HSTS", "true").lower() in ("true", "1", "yes")
 HSTS_MAX_AGE = int(os.getenv("HSTS_MAX_AGE", "31536000"))  # 1 year
+# Override full CSP in production (e.g. tighten script-src; add connect-src for your API origin).
 CSP_POLICY = os.getenv(
     "CSP_POLICY",
-    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'"
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'",
 )
 
 # Request size limits
