@@ -114,7 +114,9 @@ export function SettingsPage() {
               </Button>
             </div>
             <p className="mt-1 text-sm text-gray-500">
-              Only required if the ContextForge API has authentication enabled.
+              Only required if the ContextForge API has authentication enabled. The key is stored in
+              this browser&apos;s local storage; anyone with script access to this origin could read it,
+              so use a dedicated key and avoid high-privilege credentials in untrusted environments.
             </p>
           </div>
 

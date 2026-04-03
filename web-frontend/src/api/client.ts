@@ -225,7 +225,10 @@ class ApiClient {
     this.startHealthCheck();
   }
 
-  /** Optional gateway API key (Authorization: Bearer), persisted in localStorage. */
+  /**
+   * Optional gateway API key (`Authorization: Bearer`), persisted in `localStorage`.
+   * Same-origin pages can read it; do not treat as a secret against XSS—use only on trusted networks or with gateway auth you accept for your threat model.
+   */
   getApiKey(): string | null {
     return this.apiKey;
   }

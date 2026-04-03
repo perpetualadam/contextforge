@@ -17,6 +17,8 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.requests import Request
+from starlette.responses import Response
 
 # JWT Configuration
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
@@ -34,6 +36,58 @@ pwd_context = CryptContext(
 )
 
 security = HTTPBearer()
+# Optional bearer: missing header yields None instead of 401 (used for logout, etc.)
+optional_bearer = HTTPBearer(auto_error=False)
+
+# httpOnly cookie names (browser sends automatically with credentials: include)
+JWT_ACCESS_COOKIE_NAME = os.getenv("JWT_ACCESS_COOKIE_NAME", "cf_access_token")
+JWT_REFRESH_COOKIE_NAME = os.getenv("JWT_REFRESH_COOKIE_NAME", "cf_refresh_token")
+
+
+def get_credentials_from_request(request: Request) -> Optional[HTTPAuthorizationCredentials]:
+    """Resolve Bearer token from Authorization header or httpOnly access cookie."""
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return HTTPAuthorizationCredentials(
+            scheme="Bearer",
+            credentials=auth.split(" ", 1)[1].strip(),
+        )
+    token = request.cookies.get(JWT_ACCESS_COOKIE_NAME)
+    if token:
+        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    return None
+
+
+def set_auth_cookies(response: Response, token_pair: "TokenPair") -> None:
+    """Set httpOnly cookies for access and refresh JWTs (not readable by JavaScript)."""
+    secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    samesite = os.getenv("COOKIE_SAMESITE", "lax").lower()
+    if samesite not in ("lax", "strict", "none"):
+        samesite = "lax"
+    response.set_cookie(
+        key=JWT_ACCESS_COOKIE_NAME,
+        value=token_pair.access_token,
+        httponly=True,
+        max_age=int(token_pair.expires_in),
+        samesite=samesite,
+        secure=secure,
+        path="/",
+    )
+    refresh_max = int(os.getenv("JWT_REFRESH_COOKIE_MAX_AGE", str(7 * 24 * 3600)))
+    response.set_cookie(
+        key=JWT_REFRESH_COOKIE_NAME,
+        value=token_pair.refresh_token,
+        httponly=True,
+        max_age=refresh_max,
+        samesite=samesite,
+        secure=secure,
+        path="/",
+    )
+
+
+def clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(JWT_ACCESS_COOKIE_NAME, path="/")
+    response.delete_cookie(JWT_REFRESH_COOKIE_NAME, path="/")
 
 
 class UserRole(str, Enum):
@@ -178,8 +232,11 @@ class JWTAuthManager:
 
     def require_roles(self, required_roles: List[UserRole]):
         """Dependency to require specific roles."""
-        def role_checker(credentials: HTTPAuthorizationCredentials = Security(security)) -> User:
-            token_data = self.verify_token(credentials)
+        def role_checker(request: Request) -> User:
+            creds = get_credentials_from_request(request)
+            if creds is None:
+                raise HTTPException(status_code=401, detail="Missing authentication token")
+            token_data = self.verify_token(creds)
             user = self.get_current_user(token_data)
 
             # Check if user has any of the required roles
@@ -210,11 +267,34 @@ def get_jwt_manager() -> JWTAuthManager:
 
 
 # FastAPI dependencies
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> User:
-    """FastAPI dependency to get current authenticated user."""
+async def get_current_user(request: Request) -> User:
+    """Authenticate via Authorization: Bearer or httpOnly access cookie."""
+    creds = get_credentials_from_request(request)
+    if creds is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     manager = get_jwt_manager()
-    token_data = manager.verify_token(credentials)
+    token_data = manager.verify_token(creds)
     return manager.get_current_user(token_data)
+
+
+async def get_current_user_optional(request: Request) -> Optional[User]:
+    """
+    Optional auth: returns None if no Bearer/cookie or if token is invalid/expired.
+    Use for endpoints that must succeed without credentials (e.g. logout clears cookies).
+    """
+    creds = get_credentials_from_request(request)
+    if creds is None:
+        return None
+    manager = get_jwt_manager()
+    try:
+        token_data = manager.decode_token(creds.credentials)
+        return manager.get_current_user(token_data)
+    except HTTPException:
+        return None
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:

@@ -37,6 +37,17 @@ class TestCookieAuthentication:
         assert csrf_token is not None
         assert len(csrf_token) > 0
     
+    def test_login_sets_http_only_auth_cookies(self):
+        """Login sets cf_access_token and cf_refresh_token (httpOnly on server)."""
+        response = requests.post(
+            f"{API_BASE_URL}/auth/login",
+            json=TEST_USER,
+            verify=VERIFY_SSL
+        )
+        assert response.status_code == 200
+        assert "cf_access_token" in response.cookies
+        assert "cf_refresh_token" in response.cookies
+
     def test_login_returns_tokens(self):
         """Test that login returns access and refresh tokens."""
         response = requests.post(
@@ -105,7 +116,20 @@ class TestCookieAuthentication:
         assert response.status_code == 200
         data = response.json()
         assert data["username"] == TEST_USER["username"]
-    
+
+    def test_authenticated_request_with_access_cookie_only(self):
+        """GET /auth/me succeeds when session sends cf_access_token cookie (no Authorization header)."""
+        session = requests.Session()
+        login_response = session.post(
+            f"{API_BASE_URL}/auth/login",
+            json=TEST_USER,
+            verify=VERIFY_SSL,
+        )
+        assert login_response.status_code == 200
+        response = session.get(f"{API_BASE_URL}/auth/me", verify=VERIFY_SSL)
+        assert response.status_code == 200
+        assert response.json()["username"] == TEST_USER["username"]
+
     def test_csrf_protection_on_post(self):
         """Test that POST requests require CSRF token."""
         session = requests.Session()

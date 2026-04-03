@@ -11,14 +11,21 @@ import logging
 from typing import Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends, Response, Request
+from fastapi import APIRouter, HTTPException, Depends, Response, Request, Body
 from pydantic import BaseModel, Field, EmailStr
 
+from services.security.jwt_auth import (
+    set_auth_cookies,
+    clear_auth_cookies,
+    JWT_ACCESS_COOKIE_NAME,
+    JWT_REFRESH_COOKIE_NAME,
+)
 from services.security import (
     get_jwt_manager,
     get_csrf_protection,
     get_audit_logger,
     get_current_user,
+    get_current_user_optional,
     User,
     UserRole,
     TokenPair,
@@ -63,8 +70,8 @@ class ChangePasswordRequest(BaseModel):
 
 
 class TokenRefreshRequest(BaseModel):
-    """Token refresh request."""
-    refresh_token: str
+    """Token refresh request (body optional when refresh cookie is set)."""
+    refresh_token: Optional[str] = None
 
 
 @router.post("/login", response_model=TokenPair)
@@ -130,7 +137,10 @@ async def login(
     # Generate and set CSRF token
     csrf_token = csrf_protection.generate_token(user.user_id)
     csrf_protection.set_csrf_cookie(response, csrf_token)
-    
+
+    # httpOnly cookies: browser sends on subsequent requests (credentials: include)
+    set_auth_cookies(response, token_pair)
+
     # Log successful login
     audit_logger.log_security_event(
         event_type=AuditEventType.LOGIN_SUCCESS,
@@ -148,59 +158,75 @@ async def login(
 async def logout(
     http_request: Request,
     response: Response,
-    user: User = Depends(get_current_user)
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Logout user and revoke tokens.
+
+    Authentication is optional: clients may call without a Bearer token (e.g. cookie-only
+    flows) and still receive success; any valid Bearer token is revoked when present.
     """
     jwt_manager = get_jwt_manager()
     audit_logger = get_audit_logger()
-    
-    # Get token from header
+
     auth_header = http_request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        jwt_manager.revoke_token(token)
-    
-    # Clear CSRF cookie
+        jwt_manager.revoke_token(auth_header.split(" ", 1)[1].strip())
+    else:
+        access_cookie = http_request.cookies.get(JWT_ACCESS_COOKIE_NAME)
+        if access_cookie:
+            jwt_manager.revoke_token(access_cookie)
+
     response.delete_cookie("csrf_token")
-    
-    # Log logout
-    audit_logger.log_security_event(
-        event_type=AuditEventType.LOGOUT,
-        user_id=user.user_id,
-        username=user.username,
-        client_ip=http_request.client.host if http_request.client else "unknown",
-        details={},
-        severity="info"
-    )
-    
+    clear_auth_cookies(response)
+
+    if user is not None:
+        audit_logger.log_security_event(
+            event_type=AuditEventType.LOGOUT,
+            user_id=user.user_id,
+            username=user.username,
+            client_ip=http_request.client.host if http_request.client else "unknown",
+            details={},
+            severity="info",
+        )
+
     return {"message": "Logged out successfully"}
 
 
 @router.post("/refresh", response_model=TokenPair)
-async def refresh_token(request: TokenRefreshRequest):
+async def refresh_token(
+    http_request: Request,
+    response: Response,
+    body: TokenRefreshRequest = Body(default_factory=TokenRefreshRequest),
+):
     """
-    Refresh access token using refresh token.
+    Refresh access token using refresh token from body or httpOnly refresh cookie.
     """
     jwt_manager = get_jwt_manager()
-    
+
+    refresh_str = (body.refresh_token or "").strip() or http_request.cookies.get(
+        JWT_REFRESH_COOKIE_NAME
+    )
+    if not refresh_str:
+        raise HTTPException(status_code=401, detail="Refresh token required")
+
     # Decode refresh token
-    token_data = jwt_manager.decode_token(request.refresh_token)
-    
+    token_data = jwt_manager.decode_token(refresh_str)
+
     # Verify it's a refresh token
     if token_data.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid token type")
-    
+
     # Create new user object
     user = User(
         user_id=token_data["user_id"],
         username=token_data.get("username", "unknown"),
         roles=[UserRole.USER]  # Load from database in production
     )
-    
+
     # Generate new token pair
     token_pair = jwt_manager.create_token_pair(user)
+    set_auth_cookies(response, token_pair)
 
     return token_pair
 

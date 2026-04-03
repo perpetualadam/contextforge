@@ -43,9 +43,9 @@ interface ContextForgeConfig {
 }
 
 function toGitConfig(c: ContextForgeConfig): GitConfig {
-    const vp = c.vcsProvider;
+    const raw = (c.vcsProvider || '').trim().toLowerCase();
     const vcsProvider: VCSProvider =
-        vp === 'gitlab' || vp === 'bitbucket' ? vp : 'github';
+        raw === 'gitlab' || raw === 'bitbucket' ? raw : 'github';
     return {
         gitEnabled: c.gitEnabled,
         githubToken: c.githubToken,
@@ -734,7 +734,20 @@ export function activate(context: vscode.ExtensionContext) {
     const openPublishHubCommand = vscode.commands.registerCommand('contextforge.openPublishHub', () => {
         const c = getConfig();
         const base = (c.webUiUrl || 'http://localhost:3000').replace(/\/$/, '');
-        vscode.env.openExternal(vscode.Uri.parse(`${base}/publish`));
+        try {
+            const url = new URL(base);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+                vscode.window.showErrorMessage(
+                    'contextforge.webUiUrl must be an http(s) URL (e.g. http://localhost:3000).'
+                );
+                return;
+            }
+            vscode.env.openExternal(vscode.Uri.parse(`${url.origin}${url.pathname.replace(/\/$/, '')}/publish`));
+        } catch {
+            vscode.window.showErrorMessage(
+                'Invalid contextforge.webUiUrl. Set a full URL such as http://localhost:3000'
+            );
+        }
     });
 
     const openPromptGeneratorCommand = vscode.commands.registerCommand('contextforge.openPromptGenerator', () => {

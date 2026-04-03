@@ -1,9 +1,12 @@
 /**
  * Authentication Hook for ContextForge
- * Handles JWT authentication with HTTP-only cookies and CSRF protection
+ *
+ * The API sets httpOnly cookies (`cf_access_token`, `cf_refresh_token`) on login; the
+ * browser sends them on same-site requests when using `credentials: 'include'`.
+ * JSON token fields may still be present for non-browser clients—prefer cookies in the SPA.
  */
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -62,6 +65,8 @@ export const useAuthStore = create<AuthState>()(
 
 export const useAuth = () => {
   const { user, csrfToken, isAuthenticated, isLoading, error, setUser, setCSRFToken, setLoading, setError, logout: storeLogout } = useAuthStore();
+  /** One-time /auth/me probe per hook mount (avoids refetch loops when user is null after logout). */
+  const sessionProbeDone = useRef(false);
 
   /**
    * Fetch current user info
@@ -174,12 +179,12 @@ export const useAuth = () => {
     return response;
   }, [csrfToken, logout]);
 
-  // Restore session when user not yet loaded from cookies / persist
+  // Restore session once on mount (cookie / persisted user); do not refetch every time user becomes null (e.g. logout)
   useEffect(() => {
-    if (!user) {
-      void fetchUserInfo();
-    }
-  }, [user, fetchUserInfo]);
+    if (sessionProbeDone.current) return;
+    sessionProbeDone.current = true;
+    void fetchUserInfo();
+  }, [fetchUserInfo]);
 
   return {
     user,

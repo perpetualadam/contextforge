@@ -19,6 +19,12 @@ from .jwt_auth import (
     TokenPair,
     get_jwt_manager,
     get_current_user,
+    get_current_user_optional,
+    get_credentials_from_request,
+    set_auth_cookies,
+    clear_auth_cookies,
+    JWT_ACCESS_COOKIE_NAME,
+    JWT_REFRESH_COOKIE_NAME,
     require_admin,
     require_user
 )
@@ -58,6 +64,12 @@ __all__ = [
     "TokenPair",
     "get_jwt_manager",
     "get_current_user",
+    "get_current_user_optional",
+    "get_credentials_from_request",
+    "set_auth_cookies",
+    "clear_auth_cookies",
+    "JWT_ACCESS_COOKIE_NAME",
+    "JWT_REFRESH_COOKIE_NAME",
     "require_admin",
     "require_user",
     
