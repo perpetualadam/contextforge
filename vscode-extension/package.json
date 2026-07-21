@@ -412,7 +412,12 @@
         "contextforge.vcsProvider": {
           "type": "string",
           "default": "",
-          "enum": ["", "github", "gitlab", "bitbucket"],
+          "enum": [
+            "",
+            "github",
+            "gitlab",
+            "bitbucket"
+          ],
           "enumDescriptions": [
             "Auto-detect from remote URL",
             "GitHub",
@@ -527,7 +532,11 @@
         },
         "contextforge.packageScriptRunner": {
           "type": "string",
-          "enum": ["npm", "pnpm", "yarn"],
+          "enum": [
+            "npm",
+            "pnpm",
+            "yarn"
+          ],
           "default": "npm",
           "description": "Package manager used for 'Run package.json script'"
         },
@@ -704,15 +713,15 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "compile": "node ./node_modules/typescript/bin/tsc -p ./",
+    "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src --ext ts",
+    "lint": "node ./node_modules/eslint/bin/eslint.js src --ext ts",
     "test": "node ./out/test/runTest.js",
+    "test:unit": "npm run compile && node --test out/test/chatComposerFeatures.test.js out/test/chatPanelComposer.wiring.test.js",
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "16.x",
     "@types/vscode": "^1.74.0",

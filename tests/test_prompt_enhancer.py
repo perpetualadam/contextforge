@@ -63,7 +63,7 @@ class TestPromptBuilder:
         from services.prompt_enhancer import PromptBuilder
 
         builder = PromptBuilder()
-        assert builder.max_tokens == 4096  # Default is 4096
+        assert builder.max_tokens == 32768  # Default context window budget
 
         builder2 = PromptBuilder(max_tokens=8192)
         assert builder2.max_tokens == 8192

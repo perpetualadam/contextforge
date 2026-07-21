@@ -741,6 +741,15 @@ export function activate(context: vscode.ExtensionContext) {
         chatProvider.openChat();
     });
 
+    const insertChatTextCommand = vscode.commands.registerCommand(
+        'contextforge.chat.insertText',
+        (text: string) => {
+            if (typeof text === 'string' && text.trim()) {
+                chatProvider.insertText(text);
+            }
+        }
+    );
+
     const setupWizardCommand = vscode.commands.registerCommand('contextforge.setupWizard', async () => {
         const c = getConfig();
         try {
@@ -1697,6 +1706,7 @@ export function activate(context: vscode.ExtensionContext) {
         showTerminalProcesses,
         toggleAutoTerminalCommand,
         openChatCommand,
+        insertChatTextCommand,
         setupWizardCommand,
         quickAgentFlowCommand,
         openPublishHubCommand,
