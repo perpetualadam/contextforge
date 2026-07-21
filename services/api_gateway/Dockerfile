@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code and shared packages used by the gateway
 COPY services/api_gateway/ .
 COPY services/__init__.py /services/__init__.py
+COPY services/utils /services/utils
 COPY services/core /services/core
 ENV PYTHONPATH=/:/app
 

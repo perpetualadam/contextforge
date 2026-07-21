@@ -50,15 +50,17 @@ jobs:
           ${{ steps.compose.outputs.cmd }} up -d --build \
             api_gateway vector-index preprocessor connector web-fetcher terminal-executor
           echo "Waiting for health..."
-          for i in $(seq 1 120); do
+          for i in $(seq 1 180); do
             if curl -sf http://localhost:8080/health >/dev/null \
-              && curl -sf http://localhost:8002/health >/dev/null; then
-              echo "gateway+connector healthy"
+              && curl -sf http://localhost:8002/health >/dev/null \
+              && curl -sf http://localhost:8001/health >/dev/null; then
+              echo "gateway+connector+vector-index healthy"
               exit 0
             fi
-            sleep 2
+            sleep 3
           done
-          echo "Gateway/connector did not become healthy in time" >&2
+          echo "Required services did not become healthy in time" >&2
+          ${{ steps.compose.outputs.cmd }} ps
           ${{ steps.compose.outputs.cmd }} logs
           exit 1
 
