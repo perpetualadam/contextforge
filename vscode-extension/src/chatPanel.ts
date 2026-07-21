@@ -57,6 +57,10 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _currentSession: ChatSession;
     private _sessions: ChatSession[] = [];
+    /** Text waiting to be delivered once the chat webview is resolved. */
+    private _pendingInsertText?: string;
+    /** Monotonic id so stale enhance responses are ignored. */
+    private _enhanceRequestSeq = 0;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -112,7 +116,12 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                     vscode.window.showInformationMessage('Conversation forked');
                     break;
                 case 'enhancePrompt':
-                    await this.handleEnhancePrompt(data.prompt, data.context, data.style);
+                    await this.handleEnhancePrompt(
+                        data.prompt,
+                        data.context,
+                        data.style,
+                        data.requestId
+                    );
                     break;
                 case 'voiceError':
                     vscode.window.showWarningMessage(
@@ -123,6 +132,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         });
 
         this.updateWebview();
+        this.flushPendingInsertText();
     }
 
     private createNewSession(): ChatSession {
@@ -387,34 +397,80 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         this._config = config;
     }
 
-    public openChat() {
+    public async openChat(): Promise<void> {
         if (this._view) {
             this._view.show?.(true);
+            return;
+        }
+
+        // Reveal/focus the chat view so VS Code resolves the webview provider.
+        try {
+            await vscode.commands.executeCommand('contextforge.chatView.focus');
+        } catch {
+            // Older hosts may not support view focus; ignore and rely on pending insert flush.
         }
     }
 
     public sendMessage(message: string) {
-        this.insertText(message);
+        void this.insertText(message);
     }
 
     /**
      * Insert text into the chat composer (used by Prompt Generator "Use in Chat"
      * and by the enhance-prompt flow when applying results externally).
+     *
+     * If the chat webview is not resolved yet, queue the text and reveal the
+     * chat view so resolveWebviewView can deliver it.
      */
-    public insertText(message: string) {
+    public async insertText(message: string): Promise<void> {
+        if (typeof message !== 'string' || !message.trim()) {
+            return;
+        }
+
         if (this._view) {
+            this._view.show?.(true);
             this._view.webview.postMessage({
                 type: 'setMessage',
                 message: message
             });
-            this._view.show?.(true);
+            return;
         }
+
+        this._pendingInsertText = message;
+        await this.openChat();
+        // If focus synchronously resolved the view, deliver immediately.
+        this.flushPendingInsertText();
     }
 
-    private async handleEnhancePrompt(prompt: string, context?: string, style?: string) {
+    private flushPendingInsertText(): void {
+        if (!this._view || this._pendingInsertText === undefined) {
+            return;
+        }
+
+        const pending = this._pendingInsertText;
+        this._pendingInsertText = undefined;
+        this._view.show?.(true);
+        this._view.webview.postMessage({
+            type: 'setMessage',
+            message: pending
+        });
+    }
+
+    private async handleEnhancePrompt(
+        prompt: string,
+        context?: string,
+        style?: string,
+        requestId?: number
+    ) {
+        const resolvedRequestId =
+            typeof requestId === 'number' ? requestId : ++this._enhanceRequestSeq;
+        this._enhanceRequestSeq = Math.max(this._enhanceRequestSeq, resolvedRequestId);
+
         if (!canEnhancePrompt(prompt)) {
             this._view?.webview.postMessage({
                 type: 'enhancementResult',
+                requestId: resolvedRequestId,
+                sourcePrompt: prompt,
                 error: 'Enter a prompt to enhance first',
             });
             return;
@@ -428,20 +484,33 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 { timeout: 30000 }
             );
 
+            // Drop responses superseded by a newer enhance click.
+            if (resolvedRequestId !== this._enhanceRequestSeq) {
+                return;
+            }
+
             const enhancement = response.data;
             const enhancedText = applyEnhancementToDraft(prompt, enhancement);
 
             this._view?.webview.postMessage({
                 type: 'enhancementResult',
+                requestId: resolvedRequestId,
+                sourcePrompt: prompt,
                 enhancement: {
                     ...enhancement,
                     enhanced: enhancedText,
                 },
             });
         } catch (error: any) {
+            if (resolvedRequestId !== this._enhanceRequestSeq) {
+                return;
+            }
+
             const message = error?.message || 'Failed to enhance prompt';
             this._view?.webview.postMessage({
                 type: 'enhancementResult',
+                requestId: resolvedRequestId,
+                sourcePrompt: prompt,
                 error: message,
             });
             vscode.window.showErrorMessage(`Failed to enhance prompt: ${message}`);
@@ -1029,6 +1098,9 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         let voiceRecognition = null;
         let isListening = false;
         let draftBeforeInterim = '';
+        let enhanceRequestSeq = 0;
+        let activeEnhanceRequestId = 0;
+        let enhanceSourcePrompt = '';
 
         window.addEventListener('message', event => {
             const message = event.data;
@@ -1064,6 +1136,29 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             status.className = isError ? 'composer-status error' : 'composer-status';
         }
 
+        function shouldApplyEnhancementResult(options) {
+            const requestId = options && options.requestId;
+            const activeRequestId = options && options.activeRequestId;
+            const sourcePrompt = options && options.sourcePrompt;
+            const currentDraft = options && options.currentDraft;
+
+            if (
+                typeof requestId === 'number' &&
+                typeof activeRequestId === 'number' &&
+                requestId !== activeRequestId
+            ) {
+                return false;
+            }
+
+            if (typeof sourcePrompt === 'string' && typeof currentDraft === 'string') {
+                if (currentDraft.trim() !== sourcePrompt.trim()) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         function enhancePrompt() {
             const input = document.getElementById('messageInput');
             const prompt = (input.value || '').trim();
@@ -1071,6 +1166,10 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 setComposerStatus('Enter a prompt to enhance first', true);
                 return;
             }
+
+            const requestId = ++enhanceRequestSeq;
+            activeEnhanceRequestId = requestId;
+            enhanceSourcePrompt = prompt;
 
             const enhanceButton = document.getElementById('enhancePromptButton');
             if (enhanceButton) {
@@ -1082,19 +1181,49 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({
                 type: 'enhancePrompt',
                 prompt: prompt,
-                style: 'professional'
+                style: 'professional',
+                requestId: requestId
             });
         }
 
         function handleEnhancementResult(message) {
-            const enhanceButton = document.getElementById('enhancePromptButton');
-            if (enhanceButton) {
-                enhanceButton.disabled = false;
-                enhanceButton.textContent = '✨ Enhance';
+            const requestId = message.requestId;
+            const isActiveRequest =
+                typeof requestId !== 'number' || requestId === activeEnhanceRequestId;
+
+            // Always unlock the button for the active (latest) request only.
+            if (isActiveRequest) {
+                const enhanceButton = document.getElementById('enhancePromptButton');
+                if (enhanceButton) {
+                    enhanceButton.disabled = false;
+                    enhanceButton.textContent = '✨ Enhance';
+                }
+            }
+
+            if (!isActiveRequest) {
+                return;
             }
 
             if (message.error) {
                 setComposerStatus(message.error, true);
+                return;
+            }
+
+            const input = document.getElementById('messageInput');
+            const currentDraft = input ? input.value : '';
+            const sourcePrompt =
+                message.sourcePrompt != null ? message.sourcePrompt : enhanceSourcePrompt;
+
+            if (!shouldApplyEnhancementResult({
+                requestId: requestId,
+                activeRequestId: activeEnhanceRequestId,
+                sourcePrompt: sourcePrompt,
+                currentDraft: currentDraft
+            })) {
+                setComposerStatus(
+                    'Enhancement skipped — draft changed while request was in flight',
+                    true
+                );
                 return;
             }
 

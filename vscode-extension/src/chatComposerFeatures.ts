@@ -85,6 +85,35 @@ export function applyEnhancementToDraft(
 }
 
 /**
+ * Guard against applying a stale enhance response after the draft changed
+ * or a newer enhance request was started.
+ */
+export function shouldApplyEnhancementResult(options: {
+    requestId?: number | null;
+    activeRequestId?: number | null;
+    sourcePrompt?: string | null;
+    currentDraft?: string | null;
+}): boolean {
+    const { requestId, activeRequestId, sourcePrompt, currentDraft } = options;
+
+    if (
+        typeof requestId === 'number' &&
+        typeof activeRequestId === 'number' &&
+        requestId !== activeRequestId
+    ) {
+        return false;
+    }
+
+    if (typeof sourcePrompt === 'string' && typeof currentDraft === 'string') {
+        if (currentDraft.trim() !== sourcePrompt.trim()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Merge speech transcript into the composer draft.
  * Final transcripts append as new text; interim replaces a trailing interim marker.
  */
