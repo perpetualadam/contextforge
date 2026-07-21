@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
 import axios from 'axios';
+import {
+    applyEnhancementToDraft,
+    buildChatInputSectionHtml,
+    buildEnhancePromptRequest,
+    canEnhancePrompt,
+    COMPOSER_CONTROL_IDS,
+} from './chatComposerFeatures';
 
 interface FileAttachment {
     id: string;
@@ -103,6 +110,14 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 case 'forkSession':
                     this.forkSession(data.sessionId || this._currentSession.id);
                     vscode.window.showInformationMessage('Conversation forked');
+                    break;
+                case 'enhancePrompt':
+                    await this.handleEnhancePrompt(data.prompt, data.context, data.style);
+                    break;
+                case 'voiceError':
+                    vscode.window.showWarningMessage(
+                        data.message || 'Voice input is unavailable in this environment'
+                    );
                     break;
             }
         });
@@ -379,12 +394,57 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
     }
 
     public sendMessage(message: string) {
+        this.insertText(message);
+    }
+
+    /**
+     * Insert text into the chat composer (used by Prompt Generator "Use in Chat"
+     * and by the enhance-prompt flow when applying results externally).
+     */
+    public insertText(message: string) {
         if (this._view) {
             this._view.webview.postMessage({
                 type: 'setMessage',
                 message: message
             });
             this._view.show?.(true);
+        }
+    }
+
+    private async handleEnhancePrompt(prompt: string, context?: string, style?: string) {
+        if (!canEnhancePrompt(prompt)) {
+            this._view?.webview.postMessage({
+                type: 'enhancementResult',
+                error: 'Enter a prompt to enhance first',
+            });
+            return;
+        }
+
+        try {
+            const payload = buildEnhancePromptRequest(prompt, { context, style });
+            const response = await axios.post(
+                `${this._config.apiUrl}/prompts/enhance`,
+                payload,
+                { timeout: 30000 }
+            );
+
+            const enhancement = response.data;
+            const enhancedText = applyEnhancementToDraft(prompt, enhancement);
+
+            this._view?.webview.postMessage({
+                type: 'enhancementResult',
+                enhancement: {
+                    ...enhancement,
+                    enhanced: enhancedText,
+                },
+            });
+        } catch (error: any) {
+            const message = error?.message || 'Failed to enhance prompt';
+            this._view?.webview.postMessage({
+                type: 'enhancementResult',
+                error: message,
+            });
+            vscode.window.showErrorMessage(`Failed to enhance prompt: ${message}`);
         }
     }
 
@@ -715,12 +775,14 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         
         .input-wrapper {
             display: flex;
+            flex-direction: column;
             gap: 8px;
-            align-items: flex-end;
         }
         
         .message-input {
             flex: 1;
+            width: 100%;
+            box-sizing: border-box;
             min-height: 20px;
             max-height: 100px;
             padding: 8px;
@@ -738,6 +800,50 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             outline: none;
             border-color: var(--vscode-focusBorder);
         }
+
+        .composer-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .composer-action-button {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: 1px solid var(--vscode-button-border, transparent);
+            padding: 8px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            white-space: nowrap;
+        }
+
+        .composer-action-button:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .composer-action-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .composer-action-button.listening {
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border-color: var(--vscode-inputValidation-errorBorder);
+        }
+
+        .composer-status {
+            min-height: 1.1em;
+            margin-top: 4px;
+            font-size: 0.8em;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .composer-status.error {
+            color: var(--vscode-errorForeground);
+        }
         
         .send-button {
             background-color: var(--vscode-button-background);
@@ -747,6 +853,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.9em;
+            margin-left: auto;
         }
         
         .send-button:hover {
@@ -911,15 +1018,7 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 <button class="file-upload-button" onclick="document.getElementById('fileInput').click()">📎 Attach</button>
                 <span style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">or drag files here</span>
             </div>
-            <div class="input-wrapper">
-                <textarea
-                    class="message-input"
-                    id="messageInput"
-                    placeholder="Ask anything... Use @file:path @symbol:name @git @docs:query @web:query"
-                    rows="1"
-                ></textarea>
-                <button class="send-button" id="sendButton" onclick="sendMessage()">Send</button>
-            </div>
+            ${buildChatInputSectionHtml(COMPOSER_CONTROL_IDS)}
         </div>
     </div>
 
@@ -927,6 +1026,9 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         const vscode = acquireVsCodeApi();
         let currentSession = null;
         let sessions = [];
+        let voiceRecognition = null;
+        let isListening = false;
+        let draftBeforeInterim = '';
 
         window.addEventListener('message', event => {
             const message = event.data;
@@ -943,8 +1045,192 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
                 case 'setMessage':
                     setInputMessage(message.message);
                     break;
+                case 'enhancementResult':
+                    handleEnhancementResult(message);
+                    break;
+                case 'fileUploaded':
+                    if (message.attachment) {
+                        attachedFiles.push(message.attachment);
+                        updateAttachmentsDisplay();
+                    }
+                    break;
             }
         });
+
+        function setComposerStatus(text, isError) {
+            const status = document.getElementById('composerStatus');
+            if (!status) return;
+            status.textContent = text || '';
+            status.className = isError ? 'composer-status error' : 'composer-status';
+        }
+
+        function enhancePrompt() {
+            const input = document.getElementById('messageInput');
+            const prompt = (input.value || '').trim();
+            if (!prompt) {
+                setComposerStatus('Enter a prompt to enhance first', true);
+                return;
+            }
+
+            const enhanceButton = document.getElementById('enhancePromptButton');
+            if (enhanceButton) {
+                enhanceButton.disabled = true;
+                enhanceButton.textContent = '✨ Enhancing…';
+            }
+            setComposerStatus('Enhancing prompt…');
+
+            vscode.postMessage({
+                type: 'enhancePrompt',
+                prompt: prompt,
+                style: 'professional'
+            });
+        }
+
+        function handleEnhancementResult(message) {
+            const enhanceButton = document.getElementById('enhancePromptButton');
+            if (enhanceButton) {
+                enhanceButton.disabled = false;
+                enhanceButton.textContent = '✨ Enhance';
+            }
+
+            if (message.error) {
+                setComposerStatus(message.error, true);
+                return;
+            }
+
+            const enhanced = message.enhancement && message.enhancement.enhanced;
+            if (enhanced) {
+                setInputMessage(enhanced);
+                setComposerStatus('Prompt enhanced — review and send when ready');
+            } else {
+                setComposerStatus('Enhancement returned empty result', true);
+            }
+        }
+
+        function getSpeechRecognitionConstructor() {
+            return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+        }
+
+        function updateVoiceButton() {
+            const voiceButton = document.getElementById('voiceInputButton');
+            if (!voiceButton) return;
+            if (isListening) {
+                voiceButton.textContent = '⏹ Stop';
+                voiceButton.title = 'Stop listening';
+                voiceButton.setAttribute('data-voice-state', 'listening');
+                voiceButton.classList.add('listening');
+            } else {
+                voiceButton.textContent = '🔊 Speak';
+                voiceButton.title = 'Speak prompt';
+                voiceButton.setAttribute('data-voice-state', 'idle');
+                voiceButton.classList.remove('listening');
+            }
+        }
+
+        function stopVoiceInput() {
+            if (voiceRecognition) {
+                try {
+                    voiceRecognition.onend = null;
+                    voiceRecognition.stop();
+                } catch (e) {}
+            }
+            voiceRecognition = null;
+            isListening = false;
+            updateVoiceButton();
+        }
+
+        function toggleVoiceInput() {
+            const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
+            if (!SpeechRecognitionCtor) {
+                setComposerStatus('Speech recognition is not available in this environment', true);
+                vscode.postMessage({
+                    type: 'voiceError',
+                    message: 'Speech recognition is not available in this environment. Try a Chromium-based host with microphone access.'
+                });
+                return;
+            }
+
+            if (isListening) {
+                stopVoiceInput();
+                setComposerStatus('Voice input stopped');
+                return;
+            }
+
+            const input = document.getElementById('messageInput');
+            draftBeforeInterim = input.value || '';
+
+            try {
+                voiceRecognition = new SpeechRecognitionCtor();
+                voiceRecognition.continuous = true;
+                voiceRecognition.interimResults = true;
+                voiceRecognition.lang = 'en-US';
+
+                voiceRecognition.onstart = function() {
+                    isListening = true;
+                    updateVoiceButton();
+                    setComposerStatus('Listening… speak your prompt');
+                };
+
+                voiceRecognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const piece = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += piece;
+                        } else {
+                            interimTranscript += piece;
+                        }
+                    }
+
+                    if (finalTranscript) {
+                        const base = draftBeforeInterim || '';
+                        const needsSpace = base && !/\\s$/.test(base);
+                        draftBeforeInterim = needsSpace
+                            ? (base + ' ' + finalTranscript.trim())
+                            : (base + finalTranscript.trim());
+                        input.value = draftBeforeInterim;
+                    } else if (interimTranscript) {
+                        const base = draftBeforeInterim || '';
+                        const needsSpace = base && !/\\s$/.test(base);
+                        input.value = needsSpace
+                            ? (base + ' ' + interimTranscript.trim())
+                            : (base + interimTranscript.trim());
+                    }
+
+                    adjustTextareaHeight(input);
+                };
+
+                voiceRecognition.onerror = function(event) {
+                    const err = (event && event.error) ? event.error : 'unknown';
+                    stopVoiceInput();
+                    setComposerStatus('Voice input error: ' + err, true);
+                    if (err === 'not-allowed' || err === 'service-not-allowed') {
+                        vscode.postMessage({
+                            type: 'voiceError',
+                            message: 'Microphone permission was denied for voice input.'
+                        });
+                    }
+                };
+
+                voiceRecognition.onend = function() {
+                    isListening = false;
+                    updateVoiceButton();
+                    if ((input.value || '').trim()) {
+                        setComposerStatus('Voice capture complete');
+                    }
+                };
+
+                voiceRecognition.start();
+            } catch (error) {
+                stopVoiceInput();
+                setComposerStatus('Unable to start voice input', true);
+                vscode.postMessage({
+                    type: 'voiceError',
+                    message: 'Unable to start voice input: ' + (error && error.message ? error.message : String(error))
+                });
+            }
+        }
 
         function updateChatDisplay(data) {
             currentSession = data.currentSession;
@@ -1228,6 +1514,16 @@ export class ContextForgeChatProvider implements vscode.WebviewViewProvider {
         document.getElementById('messageInput').addEventListener('input', function(e) {
             adjustTextareaHeight(e.target);
         });
+
+        const enhancePromptButton = document.getElementById('enhancePromptButton');
+        if (enhancePromptButton) {
+            enhancePromptButton.addEventListener('click', enhancePrompt);
+        }
+
+        const voiceInputButton = document.getElementById('voiceInputButton');
+        if (voiceInputButton) {
+            voiceInputButton.addEventListener('click', toggleVoiceInput);
+        }
     </script>
 </body>
 </html>`;

@@ -157,5 +157,37 @@ suite('ContextForgeChatProvider Test Suite', () => {
             assert.ok(Array.isArray(session.messages));
         });
     });
+
+    suite('Composer enhance + voice controls', () => {
+        test('should expose insertText for prompt handoff', () => {
+            assert.strictEqual(typeof chatProvider.insertText, 'function');
+            assert.strictEqual(typeof chatProvider.sendMessage, 'function');
+        });
+
+        test('composer helpers place enhance and speak with the message input', () => {
+            const {
+                buildChatInputSectionHtml,
+                composerHtmlIncludesInputControls,
+                canEnhancePrompt,
+                mergeVoiceTranscript,
+                voiceButtonLabel,
+            } = require('../../chatComposerFeatures');
+
+            const html = buildChatInputSectionHtml();
+            const checks = composerHtmlIncludesInputControls(html);
+            assert.strictEqual(checks.hasMessageInput, true);
+            assert.strictEqual(checks.hasEnhance, true);
+            assert.strictEqual(checks.hasVoice, true);
+            assert.strictEqual(checks.hasSend, true);
+            assert.strictEqual(checks.enhanceNearInput, true);
+            assert.strictEqual(checks.voiceNearInput, true);
+
+            assert.strictEqual(canEnhancePrompt('improve this'), true);
+            assert.strictEqual(canEnhancePrompt(''), false);
+            assert.strictEqual(mergeVoiceTranscript('Hello', 'world'), 'Hello world');
+            assert.ok(voiceButtonLabel('idle').label.includes('Speak'));
+            assert.ok(voiceButtonLabel('listening').label.includes('Stop'));
+        });
+    });
 });
 

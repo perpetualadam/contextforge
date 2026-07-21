@@ -2,9 +2,10 @@ name: ContextForge CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, master, develop, remove-mock-llm ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, master, develop, remove-mock-llm ]
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.11'
@@ -188,6 +189,11 @@ jobs:
       working-directory: vscode-extension
       run: |
         npm run compile
+
+    - name: Run composer unit tests
+      working-directory: vscode-extension
+      run: |
+        npm run test:unit
     
     - name: Package extension
       working-directory: vscode-extension
