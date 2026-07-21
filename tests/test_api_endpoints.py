@@ -206,8 +206,11 @@ class TestAPIGatewayEndpoints:
         }
         mock_post.return_value = mock_response
 
-        # /search/vector takes query params, not JSON body
-        response = self.client.post("/search/vector?query=test%20function&top_k=5")
+        # /search/vector expects a JSON body (VectorSearchGatewayRequest)
+        response = self.client.post(
+            "/search/vector",
+            json={"query": "test function", "top_k": 5},
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -368,10 +371,10 @@ class TestAPIValidation:
         })
         assert response.status_code == 422
         
-        # Test very large max_tokens
+        # Test above configured MAX_OUTPUT_TOKENS (default 131072)
         response = self.client.post("/query", json={
             "query": "test",
-            "max_tokens": 100000
+            "max_tokens": 200000
         })
         assert response.status_code == 422
     

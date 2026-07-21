@@ -83,42 +83,44 @@ class TestHierarchicalRetriever:
         from services.retrieval import HierarchicalRetriever
         
         with patch('services.config.get_config'):
-            retriever = HierarchicalRetriever()
+            retriever = HierarchicalRetriever(vector_index_url="http://localhost:8001")
             
-            assert retriever._vector_index is None  # Lazy loaded
-            assert retriever._cache is None  # Lazy loaded
+            assert retriever.vector_index_url == "http://localhost:8001"
+            assert hasattr(retriever, "_search")
     
     def test_retriever_with_mock_index(self):
-        """Test retrieval with mocked vector index."""
-        from services.retrieval import HierarchicalRetriever, RetrievalRequest
+        """Test retrieval with mocked vector-index HTTP search."""
+        from services.retrieval import (
+            HierarchicalRetriever,
+            RetrievalRequest,
+            ContextLevel,
+            ContextResult,
+        )
         
         with patch('services.config.get_config'):
-            retriever = HierarchicalRetriever()
-            
-            # Mock the vector index
-            mock_index = MagicMock()
-            mock_index.search.return_value = [
+            retriever = HierarchicalRetriever(vector_index_url="http://localhost:8001")
+
+            mock_results = [
                 {
-                    "content": "def test():",
+                    "text": "def test():",
                     "score": 0.9,
-                    "metadata": {
+                    "meta": {
                         "file_path": "test.py",
                         "module_name": "tests",
-                        "function_name": "test"
-                    }
+                        "function_name": "test",
+                    },
                 }
             ]
-            retriever._vector_index = mock_index
-            
-            # Mock the cache
-            mock_cache = MagicMock()
-            mock_cache.get_results.return_value = None
-            retriever._cache = mock_cache
-            
-            request = RetrievalRequest(query="test function")
-            results = retriever.retrieve(request)
-            
+
+            with patch.object(retriever, "_search", return_value=mock_results):
+                request = RetrievalRequest(
+                    query="test function",
+                    levels=[ContextLevel.FILE, ContextLevel.FUNCTION],
+                )
+                results = retriever.retrieve(request)
+
             assert len(results) > 0
+            assert isinstance(results[0], ContextResult)
 
 
 class TestSemanticSearch:
