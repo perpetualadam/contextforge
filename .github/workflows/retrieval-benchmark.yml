@@ -1,15 +1,18 @@
 # Golden-set retrieval benchmark — runs on PRs; fails if too few queries hit expected files.
-# Requires docker-compose stack + ingest of examples/small-repo (matches benchmarks/golden/ci_small_repo.json).
+# Requires docker compose stack + ingest of examples/small-repo (matches benchmarks/golden/ci_small_repo.json).
 
 name: Retrieval benchmark
 
 on:
+  pull_request:
+    branches: [main, master, develop, remove-mock-llm]
+  push:
+    branches: [main, master, develop, remove-mock-llm]
   workflow_dispatch:
 
 jobs:
   golden-retrieval:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -21,22 +24,39 @@ jobs:
       - name: Install requests
         run: pip install requests
 
+      - name: Resolve docker compose command
+        id: compose
+        run: |
+          if docker compose version >/dev/null 2>&1; then
+            echo "cmd=docker compose" >> "$GITHUB_OUTPUT"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            echo "cmd=docker-compose" >> "$GITHUB_OUTPUT"
+          else
+            echo "Neither 'docker compose' nor 'docker-compose' is available" >&2
+            exit 1
+          fi
+
       - name: Build and start stack
         run: |
-          docker-compose up -d
+          ${{ steps.compose.outputs.cmd }} up -d --build
           echo "Waiting for health..."
-          for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/health && break
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:8080/health; then
+              echo
+              exit 0
+            fi
             sleep 2
           done
-          curl -sf http://localhost:8080/health || (docker-compose logs && exit 1)
+          echo "Gateway did not become healthy in time" >&2
+          ${{ steps.compose.outputs.cmd }} logs
+          exit 1
 
       - name: Ingest small-repo example
         run: |
           curl -sf -X POST "http://localhost:8080/ingest" \
             -H "Content-Type: application/json" \
             -d "{\"path\": \"$(pwd)/examples/small-repo\", \"recursive\": true}" \
-            || (docker-compose logs && exit 1)
+            || (${{ steps.compose.outputs.cmd }} logs && exit 1)
 
       - name: Run golden benchmark
         id: bench
@@ -48,7 +68,6 @@ jobs:
             --html benchmark-out/report.html \
             --min-queries-passing 1 \
             --fail-under-mean-recall 0.25
-        continue-on-error: false
 
       - name: Append summary to job log
         if: always()
@@ -69,4 +88,4 @@ jobs:
 
       - name: Stop stack
         if: always()
-        run: docker-compose down -v || true
+        run: ${{ steps.compose.outputs.cmd }} down -v || true

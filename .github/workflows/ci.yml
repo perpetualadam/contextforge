@@ -41,9 +41,13 @@ jobs:
       run: |
         flake8 services/ scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
-    - name: Run focused Python tests
+    # Broader regression suite (not just prompt-enhancement).
+    # Exclude tests/security/* — those hit a live TLS stack and belong in integration CI.
+    - name: Run Python tests
+      env:
+        PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services:${{ github.workspace }}/services/api_gateway
       run: |
-        pytest tests/test_prompt_enhance_api.py tests/test_prompt_enhancer.py -v --tb=short
+        pytest tests/ --ignore=tests/security -v --tb=short -p no:cacheprovider
 
   test-vscode-extension:
     name: VS Code Extension Tests
