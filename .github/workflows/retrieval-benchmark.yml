@@ -36,14 +36,23 @@ jobs:
             exit 1
           fi
 
-      - name: Build and start stack
+      - name: Stage small-repo for connector volume
         run: |
-          ${{ steps.compose.outputs.cmd }} up -d --build
+          mkdir -p data/repos
+          rm -rf data/repos/small-repo
+          cp -a examples/small-repo data/repos/small-repo
+          # Connector mounts ./data/repos -> /app/repos
+          test -f data/repos/small-repo/README.md
+
+      - name: Build and start retrieval stack
+        run: |
+          # Only the services required for ingest + query (skip dashboard/mcp/remote-agent).
+          ${{ steps.compose.outputs.cmd }} up -d --build \
+            api_gateway vector-index preprocessor connector web-fetcher terminal-executor
           echo "Waiting for health..."
-          for i in $(seq 1 90); do
-            gw=$(curl -sf http://localhost:8080/health && echo ok || true)
-            conn=$(curl -sf http://localhost:8002/health && echo ok || true)
-            if [ "$gw" = "ok" ] && [ "$conn" = "ok" ]; then
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8080/health >/dev/null \
+              && curl -sf http://localhost:8002/health >/dev/null; then
               echo "gateway+connector healthy"
               exit 0
             fi
@@ -52,14 +61,6 @@ jobs:
           echo "Gateway/connector did not become healthy in time" >&2
           ${{ steps.compose.outputs.cmd }} logs
           exit 1
-
-      - name: Stage small-repo for connector volume
-        run: |
-          mkdir -p data/repos
-          rm -rf data/repos/small-repo
-          cp -a examples/small-repo data/repos/small-repo
-          # Connector mounts ./data/repos -> /app/repos
-          test -f data/repos/small-repo/README.md
 
       - name: Ingest small-repo example
         run: |
