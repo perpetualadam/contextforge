@@ -33,7 +33,17 @@ describe('Chat panel composer wiring', () => {
     });
 
     it('exposes insertText for Prompt Generator → chat handoff', () => {
-        assert.ok(source.includes('public insertText'));
+        assert.ok(source.includes('public async insertText') || source.includes('public insertText'));
+        assert.ok(source.includes('_pendingInsertText'));
+        assert.ok(source.includes('flushPendingInsertText'));
+        assert.ok(source.includes('contextforge.chatView.focus'));
+    });
+
+    it('guards enhance results against stale overwrites', () => {
+        assert.ok(source.includes('shouldApplyEnhancementResult'));
+        assert.ok(source.includes('requestId'));
+        assert.ok(source.includes('sourcePrompt'));
+        assert.ok(source.includes('activeEnhanceRequestId') || source.includes('_enhanceRequestSeq'));
     });
 
     it('keeps enhance and voice in the same input interface as the textarea', () => {

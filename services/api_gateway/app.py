@@ -183,7 +183,36 @@ try:
 except ImportError:
     event_bus = None
     EVENT_BUS_ENABLED = False
+    Event = None  # type: ignore
+
+    class EventType:  # type: ignore
+        """Stub so call sites do not NameError when the bus package is absent."""
+        INDEX_STARTED = "index.started"
+        INDEX_COMPLETED = "index.completed"
+        INDEX_FAILED = "index.failed"
+        QUERY_RECEIVED = "query.received"
+        QUERY_COMPLETED = "query.completed"
+        QUERY_FAILED = "query.failed"
+        AGENT_STARTED = "agent.started"
+        AGENT_COMPLETED = "agent.completed"
+        AGENT_FAILED = "agent.failed"
+        SERVICE_STARTED = "service.started"
+
     _early_logger.warning("Event bus not available - running without event bus integration")
+
+
+async def _publish_event(event_type, payload, source: str = "api_gateway", trace_id: Optional[str] = None) -> None:
+    """Publish an event when the bus is available; no-op otherwise (e.g. slim Docker image)."""
+    if not EVENT_BUS_ENABLED or event_bus is None or Event is None:
+        return
+    kwargs: Dict[str, Any] = {
+        "type": event_type,
+        "payload": payload,
+        "source": source,
+    }
+    if trace_id is not None:
+        kwargs["trace_id"] = trace_id
+    await event_bus.publish(Event(**kwargs))
 
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
@@ -214,11 +243,7 @@ async def lifespan(app: FastAPI):
 
     # Publish SERVICE_STARTED event
     if event_bus is not None:
-        await event_bus.publish(Event(
-            type=EventType.SERVICE_STARTED,
-            payload={"service": "api_gateway"},
-            source="api_gateway"
-        ))
+        await _publish_event(EventType.SERVICE_STARTED, {"service": "api_gateway"}, source="api_gateway")
     logger.info("API Gateway started")
 
     yield
@@ -643,13 +668,7 @@ async def ingest_repository(
 
     try:
         # Publish INDEX_STARTED event
-        await event_bus.publish(Event(
-            type=EventType.INDEX_STARTED,
-            payload={"path": request.path, "recursive": request.recursive},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
-
+        await _publish_event(EventType.INDEX_STARTED, {"path": request.path, "recursive": request.recursive}, source="api_gateway", trace_id=trace_id)
         logger.info("Starting repository ingestion", path=request.path, trace_id=trace_id)
 
         # Step 1: Connect to repository
@@ -696,13 +715,7 @@ async def ingest_repository(
             "chunks_created": len(chunks_data.get("chunks", [])),
             "chunks_indexed": index_data.get("indexed_count", 0)
         }
-        await event_bus.publish(Event(
-            type=EventType.INDEX_COMPLETED,
-            payload={"path": request.path, "stats": stats},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
-
+        await _publish_event(EventType.INDEX_COMPLETED, {"path": request.path, "stats": stats}, source="api_gateway", trace_id=trace_id)
         return {
             "status": "success",
             "message": "Repository ingested successfully",
@@ -712,22 +725,12 @@ async def ingest_repository(
 
     except requests.RequestException as e:
         # Publish INDEX_FAILED event
-        await event_bus.publish(Event(
-            type=EventType.INDEX_FAILED,
-            payload={"path": request.path, "error": str(e)},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
+        await _publish_event(EventType.INDEX_FAILED, {"path": request.path, "error": str(e)}, source="api_gateway", trace_id=trace_id)
         logger.error("Service request failed during ingestion", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Service unavailable: {e}")
     except Exception as e:
         # Publish INDEX_FAILED event
-        await event_bus.publish(Event(
-            type=EventType.INDEX_FAILED,
-            payload={"path": request.path, "error": str(e)},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
+        await _publish_event(EventType.INDEX_FAILED, {"path": request.path, "error": str(e)}, source="api_gateway", trace_id=trace_id)
         logger.error("Ingestion failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
 
@@ -846,17 +849,16 @@ async def run_orchestration(
 
     try:
         # Publish AGENT_STARTED event
-        await event_bus.publish(Event(
-            type=EventType.AGENT_STARTED,
-            payload={
+        await _publish_event(
+            EventType.AGENT_STARTED,
+            {
                 "repo_path": request.repo_path,
                 "mode": request.mode,
                 "task": request.task
             },
             source="api_gateway",
             trace_id=trace_id
-        ))
-
+        )
         logger.info(
             "Starting orchestration",
             repo_path=request.repo_path,
@@ -876,17 +878,16 @@ async def run_orchestration(
         )
 
         # Publish AGENT_COMPLETED event
-        await event_bus.publish(Event(
-            type=EventType.AGENT_COMPLETED,
-            payload={
+        await _publish_event(
+            EventType.AGENT_COMPLETED,
+            {
                 "repo_path": request.repo_path,
                 "success": result.get("success"),
                 "duration_ms": result.get("duration_ms")
             },
             source="api_gateway",
             trace_id=trace_id
-        ))
-
+        )
         logger.info(
             "Orchestration completed",
             success=result.get("success"),
@@ -1068,13 +1069,7 @@ async def query_context(
 
     try:
         # Publish QUERY_RECEIVED event
-        await event_bus.publish(Event(
-            type=EventType.QUERY_RECEIVED,
-            payload={"query": request.query[:100], "auto_terminal_mode": request.auto_terminal_mode},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
-
+        await _publish_event(EventType.QUERY_RECEIVED, {"query": request.query[:100], "auto_terminal_mode": request.auto_terminal_mode}, source="api_gateway", trace_id=trace_id)
         logger.info("Processing query", query=request.query[:100], auto_terminal_mode=request.auto_terminal_mode, trace_id=trace_id)
 
         ec = request.editor_context.model_dump() if request.editor_context else None
@@ -1180,27 +1175,21 @@ async def query_context(
                    trace_id=trace_id)
 
         # Publish QUERY_COMPLETED event
-        await event_bus.publish(Event(
-            type=EventType.QUERY_COMPLETED,
-            payload={
+        await _publish_event(
+            EventType.QUERY_COMPLETED,
+            {
                 "query": request.query[:100],
                 "backend": response["meta"].get("backend"),
                 "latency_ms": response["meta"].get("total_latency_ms")
             },
             source="api_gateway",
             trace_id=trace_id
-        ))
-
+        )
         return response
 
     except Exception as e:
         # Publish QUERY_FAILED event
-        await event_bus.publish(Event(
-            type=EventType.QUERY_FAILED,
-            payload={"query": request.query[:100], "error": str(e)},
-            source="api_gateway",
-            trace_id=trace_id
-        ))
+        await _publish_event(EventType.QUERY_FAILED, {"query": request.query[:100], "error": str(e)}, source="api_gateway", trace_id=trace_id)
         logger.error("Query processing failed", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 

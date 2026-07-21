@@ -737,15 +737,15 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     // Chat commands
-    const openChatCommand = vscode.commands.registerCommand('contextforge.openChat', () => {
-        chatProvider.openChat();
+    const openChatCommand = vscode.commands.registerCommand('contextforge.openChat', async () => {
+        await chatProvider.openChat();
     });
 
     const insertChatTextCommand = vscode.commands.registerCommand(
         'contextforge.chat.insertText',
-        (text: string) => {
+        async (text: string) => {
             if (typeof text === 'string' && text.trim()) {
-                chatProvider.insertText(text);
+                await chatProvider.insertText(text);
             }
         }
     );

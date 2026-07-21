@@ -17,6 +17,7 @@ import {
     isSpeechRecognitionSupported,
     mergeVoiceTranscript,
     nextVoiceInputStatus,
+    shouldApplyEnhancementResult,
     voiceButtonLabel,
 } from '../chatComposerFeatures';
 
@@ -75,6 +76,42 @@ describe('Chat composer enhance prompt', () => {
                 improvements: [],
             }),
             'keep me'
+        );
+    });
+
+    it('rejects stale enhance results when request ids differ', () => {
+        assert.strictEqual(
+            shouldApplyEnhancementResult({
+                requestId: 1,
+                activeRequestId: 2,
+                sourcePrompt: 'old',
+                currentDraft: 'old',
+            }),
+            false
+        );
+    });
+
+    it('rejects enhance results when the draft changed while in flight', () => {
+        assert.strictEqual(
+            shouldApplyEnhancementResult({
+                requestId: 3,
+                activeRequestId: 3,
+                sourcePrompt: 'original prompt',
+                currentDraft: 'user edited while waiting',
+            }),
+            false
+        );
+    });
+
+    it('accepts enhance results for the active request and unchanged draft', () => {
+        assert.strictEqual(
+            shouldApplyEnhancementResult({
+                requestId: 4,
+                activeRequestId: 4,
+                sourcePrompt: 'same prompt',
+                currentDraft: 'same prompt',
+            }),
+            true
         );
     });
 });
