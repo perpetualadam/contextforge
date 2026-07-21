@@ -41,21 +41,31 @@ jobs:
           ${{ steps.compose.outputs.cmd }} up -d --build
           echo "Waiting for health..."
           for i in $(seq 1 90); do
-            if curl -sf http://localhost:8080/health; then
-              echo
+            gw=$(curl -sf http://localhost:8080/health && echo ok || true)
+            conn=$(curl -sf http://localhost:8002/health && echo ok || true)
+            if [ "$gw" = "ok" ] && [ "$conn" = "ok" ]; then
+              echo "gateway+connector healthy"
               exit 0
             fi
             sleep 2
           done
-          echo "Gateway did not become healthy in time" >&2
+          echo "Gateway/connector did not become healthy in time" >&2
           ${{ steps.compose.outputs.cmd }} logs
           exit 1
+
+      - name: Stage small-repo for connector volume
+        run: |
+          mkdir -p data/repos
+          rm -rf data/repos/small-repo
+          cp -a examples/small-repo data/repos/small-repo
+          # Connector mounts ./data/repos -> /app/repos
+          test -f data/repos/small-repo/README.md
 
       - name: Ingest small-repo example
         run: |
           curl -sf -X POST "http://localhost:8080/ingest" \
             -H "Content-Type: application/json" \
-            -d "{\"path\": \"$(pwd)/examples/small-repo\", \"recursive\": true}" \
+            -d '{"path": "/app/repos/small-repo", "recursive": true}' \
             || (${{ steps.compose.outputs.cmd }} logs && exit 1)
 
       - name: Run golden benchmark
