@@ -4,14 +4,19 @@ Redis Backend - Provides Redis-based persistence for agent registry and task que
 Copyright (c) 2025 ContextForge
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from threading import Lock
 
 from services.utils import utc_now
+
+if TYPE_CHECKING:
+    from services.remote_agent.models import AgentInfo, TaskInfo, TaskResult
 
 logger = logging.getLogger(__name__)
 
